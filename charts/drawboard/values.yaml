@@ -1,0 +1,58 @@
+# Drawboard Helm values. Override the images/tags to publish your own builds:
+#   helm install drawboard ./charts/drawboard \
+#     --set server.image.repository=ghcr.io/you/drawboard-server \
+#     --set server.image.tag=v1.2.0 \
+#     --set web.image.repository=ghcr.io/you/drawboard-web \
+#     --set web.image.tag=v1.2.0
+
+server:
+  replicaCount: 1
+  image:
+    repository: drawboard/server
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8080
+  env: {}            # extra env vars for the server container
+  resources: {}
+  # JWT signing secret; if empty, jwt.existingSecret is used or a random one
+  # is generated per pod start (not recommended for >1 replica).
+  jwtSecret: ""
+
+web:
+  replicaCount: 1
+  image:
+    repository: drawboard/web
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+  resources: {}
+
+ingress:
+  enabled: false
+  className: ""
+  host: drawboard.local
+  annotations: {}
+
+# Bundled Postgres (bitnami subchart). Disable to bring your own and set
+# externalDatabase.url instead.
+postgresql:
+  enabled: true
+  auth:
+    username: drawboard
+    password: drawboard
+    database: drawboard
+  primary:
+    persistence:
+      size: 1Gi
+
+externalDatabase:
+  # e.g. postgres://user:pass@host:5432/drawboard?sslmode=require
+  url: ""
+
+jwt:
+  # Name of an existing secret with key "secret" for JWT signing.
+  existingSecret: ""

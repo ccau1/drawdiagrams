@@ -1,0 +1,15 @@
+# air live-reload config for `make dev` (runs inside the golang container).
+root = "."
+tmp_dir = "/tmp/air"
+
+[build]
+  cmd = "go build -o /tmp/air/drawboard-server ./cmd/server"
+  bin = "/tmp/air/drawboard-server"
+  include_ext = ["go", "toml", "json"]
+  exclude_dir = ["data", "tmp"]
+  # macOS bind mounts don't propagate fs events into containers reliably.
+  poll = true
+  poll_interval = 500
+
+[misc]
+  clean_on_exit = true

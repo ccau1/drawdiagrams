@@ -1,0 +1,13 @@
+__pg_data__
+node_modules
+
+# build outputs
+dist/
+/assets/
+
+# helm dependency packages (helm dep build)
+charts/*/charts/*.tgz
+
+# misc
+.DS_Store
+.env

@@ -1,0 +1,54 @@
+{{- if .Values.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "drawboard.fullname" . }}
+  labels: {{ include "drawboard.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations: {{ toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          # WebSocket needs long timeouts on most ingress controllers.
+          - path: /ws
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "drawboard.fullname" . }}-server
+                port:
+                  number: {{ .Values.server.service.port }}
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "drawboard.fullname" . }}-server
+                port:
+                  number: {{ .Values.server.service.port }}
+          - path: /plugins
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "drawboard.fullname" . }}-server
+                port:
+                  number: {{ .Values.server.service.port }}
+          - path: /marketplace
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "drawboard.fullname" . }}-server
+                port:
+                  number: {{ .Values.server.service.port }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "drawboard.fullname" . }}-web
+                port:
+                  number: {{ .Values.web.service.port }}
+{{- end -}}
