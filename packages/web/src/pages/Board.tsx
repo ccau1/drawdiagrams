@@ -67,7 +67,7 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
   const [pluginTool, setPluginTool] = useState<DrawDecl | null>(null);
   const [style, setStyle] = useState<Style>({
     stroke: "#1b1b1f", fill: "transparent", strokeWidth: 2, opacity: 1, strokeType: "solid", fontSize: 20,
-    textAlign: "left", lineType: "curve", headStart: "none", headEnd: "arrow", edges: "sharp", fillPattern: "solid",
+    textAlign: "left", textVerticalAlign: "middle", lineType: "curve", headStart: "none", headEnd: "arrow", edges: "sharp", fillPattern: "solid",
   });
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [draft, setDraft] = useState<El | null>(null);
@@ -82,7 +82,7 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
   const [menuOpen, setMenuOpen] = useState(false);
   const [showStyleBar, setShowStyleBar] = useState(true);
   const [size, setSize] = useState({ w: innerWidth, h: innerHeight });
-  const [textEdit, setTextEdit] = useState<{ id: string | null; x: number; y: number; value: string; align?: "left" | "center" | "right"; field?: string; multiline?: boolean; width?: number } | null>(null);
+  const [textEdit, setTextEdit] = useState<{ id: string | null; x: number; y: number; value: string; align?: "left" | "center" | "right"; verticalAlign?: "top" | "middle" | "bottom"; field?: string; multiline?: boolean; width?: number } | null>(null);
   const [tick, setTick] = useState(0); // force minimap repaint trigger
   const [linkBubble, setLinkBubble] = useState<{ url: string; x: number; y: number } | null>(null);
   const [libSearch, setLibSearch] = useState("");
@@ -355,7 +355,7 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
     strokeWidth: styleRef.current.strokeWidth, opacity: styleRef.current.opacity,
     dashed: styleRef.current.strokeType === "dashed", // legacy field
     strokeType: styleRef.current.strokeType, fontSize: styleRef.current.fontSize,
-    textAlign: styleRef.current.textAlign,
+    textAlign: styleRef.current.textAlign, textVerticalAlign: styleRef.current.textVerticalAlign,
     lineType: styleRef.current.lineType,
     headStart: styleRef.current.headStart, headEnd: styleRef.current.headEnd,
     edges: styleRef.current.edges,
@@ -1236,6 +1236,7 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
       opacity: el.opacity, strokeType: el.strokeType ?? (el.dashed ? "dashed" : "solid"),
       fontSize: el.fontSize ?? 16,
       textAlign: el.textAlign ?? (el.type === "text" ? "left" : "center"),
+      textVerticalAlign: el.textVerticalAlign ?? "middle",
       link: el.link,
       lineType: el.lineType ?? (el.curve ? "curve" : "sharp"),
       headStart: el.headStart ?? "none", headEnd: el.headEnd ?? "arrow",
@@ -1554,7 +1555,11 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
               left: (textEdit.x - vpRef.current.x) * vpRef.current.zoom,
               top: (textEdit.y - vpRef.current.y) * vpRef.current.zoom,
               fontSize: (textEdit.align === "center" || textEdit.multiline ? 16 : 20) * vpRef.current.zoom,
-              transform: textEdit.align === "left" ? "translate(0, -50%)" : textEdit.align === "right" ? "translate(-100%, -50%)" : "translate(-50%, -50%)",
+              transform: `${
+                textEdit.align === "left" ? "translate(0" : textEdit.align === "right" ? "translate(-100%" : "translate(-50%"
+              }, ${
+                textEdit.verticalAlign === "top" ? "0)" : textEdit.verticalAlign === "bottom" ? "-100%)" : "-50%)"
+              }`,
               textAlign: textEdit.align ?? "center",
               ...(textEdit.width !== undefined ? { width: textEdit.width * vpRef.current.zoom, boxSizing: "border-box" } : {}),
             }}

@@ -1,7 +1,7 @@
 // Right-hand properties panel. Renders whatever the active tool (or the
 // selected element) declares in its PropSpec[] — built-in rows by name, or
 // custom renderers supplied by integrations.
-import type { CanvasTheme, EdgeKind, FillPattern, HeadType, LineKind, StrokeType } from "../types";
+import type { CanvasTheme, EdgeKind, FillPattern, HeadType, LineKind, StrokeType, TextVerticalAlign } from "../types";
 import type { BuiltinProp, LayerOp, PropRenderCtx, PropSpec, Style } from "../tools";
 
 const WIDTHS = [1, 2, 4, 8];
@@ -16,6 +16,7 @@ const LINE_TYPE_OPTS: LineKind[] = ["sharp", "curve", "elbow"];
 const EDGE_OPTS: EdgeKind[] = ["sharp", "round"];
 const FILL_PATTERN_OPTS: FillPattern[] = ["solid", "hatch", "crosshatch"];
 const TEXT_ALIGN_OPTS: ("left" | "center" | "right")[] = ["left", "center", "right"];
+const TEXT_VERTICAL_ALIGN_OPTS: TextVerticalAlign[] = ["top", "middle", "bottom"];
 
 function textAlignIcon(a: "left" | "center" | "right") {
   return (
@@ -28,6 +29,22 @@ function textAlignIcon(a: "left" | "center" | "right") {
       )}
       {a === "right" && (
         <><line x1="10" y1="2" x2="22" y2="2" /><line x1="6" y1="6" x2="22" y2="6" /><line x1="12" y1="10" x2="22" y2="10" /></>
+      )}
+    </svg>
+  );
+}
+
+function textVerticalAlignIcon(a: TextVerticalAlign) {
+  return (
+    <svg width="24" height="12" viewBox="0 0 24 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none">
+      {a === "top" && (
+        <><line x1="4" y1="2" x2="20" y2="2" /><rect x="9" y="4" width="6" height="6" rx="1.5" /></>
+      )}
+      {a === "middle" && (
+        <><line x1="4" y1="6" x2="9" y2="6" /><line x1="15" y1="6" x2="20" y2="6" /><rect x="9" y="3" width="6" height="6" rx="1.5" /></>
+      )}
+      {a === "bottom" && (
+        <><line x1="4" y1="10" x2="20" y2="10" /><rect x="9" y="2" width="6" height="6" rx="1.5" /></>
       )}
     </svg>
   );
@@ -260,6 +277,19 @@ export default function PropsPanel({ specs, style, theme, hasSelection, layerInf
                 <button key={a} className={style.textAlign === a ? "active" : ""}
                   title={tr(`textAlign.${a}`)} onClick={() => onStyle({ textAlign: a })}>
                   {textAlignIcon(a)}
+                </button>
+              ))}
+            </div>
+          </label>
+        );
+      case "textVerticalAlign":
+        return (
+          <label className="dim small">{tr("style.textVerticalAlign")}
+            <div className="opt-row">
+              {TEXT_VERTICAL_ALIGN_OPTS.map((a) => (
+                <button key={a} className={style.textVerticalAlign === a ? "active" : ""}
+                  title={tr(`textVerticalAlign.${a}`)} onClick={() => onStyle({ textVerticalAlign: a })}>
+                  {textVerticalAlignIcon(a)}
                 </button>
               ))}
             </div>

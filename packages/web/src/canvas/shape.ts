@@ -25,6 +25,7 @@ export interface TextEditTarget {
   value: string;
   field?: string;        // key in el.data; omitted means el.text
   align?: "left" | "center" | "right";
+  verticalAlign?: "top" | "middle" | "bottom";
   multiline?: boolean;   // allow Enter to insert newlines
   width?: number;        // optional editor width in world units
 }
@@ -62,7 +63,20 @@ export class Shape {
 
 /** Default double-click target for a bbox shape: edit its centered text. */
 export function bboxTextEditTarget(el: El): TextEditTarget {
-  return { x: el.x + el.w / 2, y: el.y + el.h / 2, value: el.text ?? "", align: el.textAlign ?? "center" };
+  const size = el.fontSize || 16;
+  const vAlign = el.textVerticalAlign ?? "middle";
+  const inset = 8;
+  let y: number;
+  if (vAlign === "top") {
+    y = el.y + inset;
+  } else if (vAlign === "bottom") {
+    const lines = (el.text || "").split("\n");
+    const blockH = lines.length * size * 1.3;
+    y = el.y + el.h - inset - blockH;
+  } else {
+    y = el.y + el.h / 2;
+  }
+  return { x: el.x + el.w / 2, y, value: el.text ?? "", align: el.textAlign ?? "center", verticalAlign: vAlign };
 }
 
 /** Default double-click target for a line/arrow: edit its label at the midpoint. */

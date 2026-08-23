@@ -197,7 +197,7 @@ export function drawHead(
   ctx.restore();
 }
 
-// Multi-line label for basic shapes, honoring textAlign.
+// Multi-line label for basic shapes, honoring textAlign and textVerticalAlign.
 export function centerText(ctx: CanvasRenderingContext2D, el: El) {
   if (!el.text) return;
   const size = el.fontSize || 16;
@@ -210,8 +210,19 @@ export function centerText(ctx: CanvasRenderingContext2D, el: El) {
   const lines = el.text.split("\n");
   const align = el.textAlign ?? "center";
   const x0 = align === "left" ? el.x + 8 : align === "right" ? el.x + el.w - 8 : el.x + el.w / 2;
-  const cy = el.y + el.h / 2, lh = size * 1.3;
-  lines.forEach((line, i) => ctx.fillText(line, x0, cy + (i - (lines.length - 1) / 2) * lh));
+  const vAlign = el.textVerticalAlign ?? "middle";
+  const lh = size * 1.3;
+  const blockH = lines.length * lh;
+  const inset = 8;
+  let y0: number;
+  if (vAlign === "top") {
+    y0 = el.y + inset + lh / 2;
+  } else if (vAlign === "bottom") {
+    y0 = el.y + el.h - inset - blockH + lh / 2;
+  } else {
+    y0 = el.y + el.h / 2 - blockH / 2 + lh / 2;
+  }
+  lines.forEach((line, i) => ctx.fillText(line, x0, y0 + i * lh));
   ctx.restore();
 }
 

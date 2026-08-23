@@ -9,6 +9,7 @@ export type LineKind = "sharp" | "curve" | "elbow";
 export type StrokeType = "solid" | "dashed" | "dotted";
 export type EdgeKind = "sharp" | "round";
 export type FillPattern = "solid" | "hatch" | "crosshatch";
+export type TextVerticalAlign = "top" | "middle" | "bottom";
 
 export interface El {
   id: string;
@@ -32,6 +33,7 @@ export interface El {
   text?: string;
   fontSize?: number;
   textAlign?: "left" | "center" | "right";
+  textVerticalAlign?: TextVerticalAlign;
   link?: string;          // optional URL attached to the element
   groupId?: string;       // optional group membership
   labelDx?: number;      // line/arrow label offset from the midpoint

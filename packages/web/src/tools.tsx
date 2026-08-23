@@ -3,13 +3,14 @@
 // tool declares its properties the same way: an array of built-in property
 // names (strings) or custom property objects with their own render fn.
 import type { ReactNode } from "react";
-import type { DrawDecl, El, EdgeKind, FillPattern, HeadType, LineKind, StrokeType } from "./types";
+import type { DrawDecl, El, EdgeKind, FillPattern, HeadType, LineKind, StrokeType, TextVerticalAlign } from "./types";
 import { PointerIcon } from "./components/icons";
 
 export interface Style {
   stroke: string; fill: string; strokeWidth: number;
   opacity: number; strokeType: StrokeType; fontSize: number;
   textAlign: "left" | "center" | "right";
+  textVerticalAlign: TextVerticalAlign;
   link?: string;            // optional URL attached to the element
   lineType: LineKind;      // line/arrow only
   headStart: HeadType;     // arrow only
@@ -32,7 +33,7 @@ export interface PropRenderCtx {
 /** Built-in properties any tool can opt into by name. */
 export type BuiltinProp =
   | "stroke" | "fill" | "strokeWidth" | "opacity"
-  | "strokeType" | "fontSize" | "textAlign" | "link" | "layers" | "lineType"
+  | "strokeType" | "fontSize" | "textAlign" | "textVerticalAlign" | "link" | "layers" | "lineType"
   | "arrowStart" | "arrowEnd" | "edges" | "fillPattern";
 
 /** Custom property: tool supplies its own renderer. */
@@ -57,8 +58,8 @@ export interface ToolDef {
 }
 
 // Shared property sets.
-const SHAPE_PROPS: PropSpec[] = ["stroke", "fill", "fillPattern", "strokeWidth", "opacity", "strokeType", "fontSize", "textAlign", "link", "layers"];
-const RECT_PROPS: PropSpec[] = ["stroke", "fill", "fillPattern", "strokeWidth", "opacity", "strokeType", "edges", "fontSize", "textAlign", "link", "layers"];
+const SHAPE_PROPS: PropSpec[] = ["stroke", "fill", "fillPattern", "strokeWidth", "opacity", "strokeType", "fontSize", "textAlign", "textVerticalAlign", "link", "layers"];
+const RECT_PROPS: PropSpec[] = ["stroke", "fill", "fillPattern", "strokeWidth", "opacity", "strokeType", "edges", "fontSize", "textAlign", "textVerticalAlign", "link", "layers"];
 const LINE_PROPS: PropSpec[] = ["stroke", "strokeWidth", "opacity", "strokeType", "lineType", "fontSize", "textAlign", "link", "layers"];
 const ARROW_PROPS: PropSpec[] = ["stroke", "strokeWidth", "opacity", "strokeType", "lineType", "arrowStart", "arrowEnd", "fontSize", "textAlign", "link", "layers"];
 const FREEHAND_PROPS: PropSpec[] = ["stroke", "strokeWidth", "opacity", "link", "layers"];
