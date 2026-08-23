@@ -30,3 +30,17 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
 {{- printf "%s-jwt" (include "drawboard.fullname" .) -}}
 {{- end -}}
 {{- end -}}
+
+{{/* Fully-qualified container image: [registry/]repository:tag */}}
+{{- define "drawboard.image" -}}
+{{- $registry := .image.registry | default "" -}}
+{{- if $registry -}}
+{{- printf "%s/%s:%s" $registry .image.repository .image.tag -}}
+{{- else -}}
+{{- printf "%s:%s" .image.repository .image.tag -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "drawboard.localAuthSecretName" -}}
+{{- printf "%s-local-auth" (include "drawboard.fullname" .) -}}
+{{- end -}}

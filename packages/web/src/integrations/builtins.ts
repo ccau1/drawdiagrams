@@ -1,17 +1,32 @@
 // Web-side logic for the built-in Go integrations. The Go side declares
-// *what* is injected (draws/reactions/themes/commands); these handlers supply
-// the *behavior* on the web, keyed by the same integration name.
+// *what* is injected (draws/reactions/themes/commands/imports/exports); these
+// handlers supply the *behavior* on the web, keyed by the same integration name.
 import { registerWebIntegration } from "../integrations";
-import { importDrawio } from "./drawio";
+import { importDrawio } from "./importers/drawio";
+import { importNativeJson } from "./importers/native";
+import { importExcalidraw } from "./importers/excalidraw";
+import { exportDrawio } from "./exporters/drawio";
+import { exportNativeJson } from "./exporters/native";
+import { exportExcalidraw } from "./exporters/excalidraw";
 import type { El } from "../types";
 
 registerWebIntegration({
   name: "uml-shapes",
   importers: [
     {
+      id: "drawio",
       extensions: ["drawio", "xml"],
       label: "draw.io diagram (.drawio / .xml)",
       run: importDrawio,
+    },
+  ],
+  exporters: [
+    {
+      id: "drawio",
+      label: "draw.io diagram (.drawio)",
+      extension: "drawio",
+      mimeType: "application/xml",
+      run: exportDrawio,
     },
   ],
   actions: {
@@ -42,6 +57,49 @@ registerWebIntegration({
   // AWS icons get a default orange stroke when placed, regardless of the
   // currently selected stroke color.
   onPlace: (el: El): El => ({ ...el, stroke: el.stroke === "#1b1b1f" ? "#e88434" : el.stroke }),
+});
+
+registerWebIntegration({
+  name: "drawboard",
+  importers: [
+    {
+      id: "native-json",
+      extensions: ["drawboard.json", "json"],
+      label: "Drawboard JSON (.drawboard.json / .json)",
+      run: importNativeJson,
+    },
+  ],
+  exporters: [
+    {
+      id: "native-json",
+      label: "Drawboard JSON (.drawboard.json)",
+      extension: "drawboard.json",
+      mimeType: "application/json",
+      run: exportNativeJson,
+    },
+  ],
+});
+
+registerWebIntegration({
+  name: "excalidraw",
+  importers: [
+    {
+      id: "excalidraw",
+      extensions: ["excalidraw", "json"],
+      label: "Excalidraw (.excalidraw / .json)",
+      multiple: true,
+      run: importExcalidraw,
+    },
+  ],
+  exporters: [
+    {
+      id: "excalidraw",
+      label: "Excalidraw (.excalidraw)",
+      extension: "excalidraw",
+      mimeType: "application/json",
+      run: exportExcalidraw,
+    },
+  ],
 });
 
 registerWebIntegration({

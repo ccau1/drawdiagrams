@@ -15,11 +15,15 @@ import (
 	"time"
 
 	awsicons "draw.local/integrations/aws-icons"
+	drawboard "draw.local/integrations/drawboard"
 	emojireactions "draw.local/integrations/emoji-reactions"
+	excalidraw "draw.local/integrations/excalidraw"
 	umlshapes "draw.local/integrations/uml-shapes"
+	"draw.local/server/internal/auth"
 	"draw.local/server/internal/collab"
 	"draw.local/server/internal/httpapi"
 	"draw.local/server/internal/integrations"
+	"draw.local/server/internal/oauth"
 	"draw.local/server/internal/store"
 )
 
@@ -27,8 +31,9 @@ func main() {
 	addr := env("ADDR", ":8080")
 	dataDir := env("DATA_DIR", "data")
 	webDir := env("WEB_DIR", "") // empty = API-only mode (web served separately)
+	registrationEnabled := envBool("LOCAL_AUTH_REGISTRATION_ENABLED", true)
 
-	secret := os.Getenv("JWT_SECRET")
+	secret := strings.TrimSpace(envOrFile("JWT_SECRET"))
 	if secret == "" {
 		b := make([]byte, 32)
 		_, _ = rand.Read(b)
@@ -55,12 +60,21 @@ func main() {
 		log.Println("using JSON-file datastore (set DATABASE_URL for Postgres)")
 	}
 
+	ensureInitialLocalUser(st)
+
 	reg, err := integrations.New(filepath.Join(dataDir, "plugins"),
-		awsicons.Inject, umlshapes.Inject, emojireactions.Inject)
+		awsicons.Inject, drawboard.Inject, excalidraw.Inject, umlshapes.Inject, emojireactions.Inject)
 	if err != nil {
 		log.Fatal(err)
 	}
-	api := &httpapi.API{St: st, Hub: collab.NewHub(), Reg: reg, Key: []byte(secret)}
+	oauthCfg := oauth.NewConfigFromEnv()
+	oauthCfg.LocalRegistrationEnabled = registrationEnabled
+	manager, err := oauth.NewManager(oauthCfg)
+	if err != nil {
+		log.Fatalf("oauth: %v", err)
+	}
+
+	api := &httpapi.API{St: st, Hub: collab.NewHub(), Reg: reg, Key: []byte(secret), Providers: manager, LocalRegistrationEnabled: registrationEnabled}
 
 	root := http.NewServeMux()
 	root.Handle("/api/", api.Routes())
@@ -87,6 +101,14 @@ func main() {
 		Handler:           logRequests(cors(root)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	if manager != nil {
+		cfg := manager.Config()
+		ids := make([]string, 0, len(cfg.Providers))
+		for _, p := range cfg.Providers {
+			ids = append(ids, p.ID)
+		}
+		log.Printf("oauth providers: %v, localEnabled=%v, localRegistrationEnabled=%v, redirectBase=%s", ids, cfg.LocalEnabled, cfg.LocalRegistrationEnabled, oauthCfg.RedirectURL)
+	}
 	log.Printf("listening on %s (web dir: %q, data dir: %s)", addr, webDir, dataDir)
 	log.Fatal(srv.ListenAndServe())
 }
@@ -96,6 +118,66 @@ func env(k, def string) string {
 		return v
 	}
 	return def
+}
+
+func envBool(k string, def bool) bool {
+	v := strings.ToLower(os.Getenv(k))
+	if v == "" {
+		return def
+	}
+	return v == "true" || v == "1" || v == "yes"
+}
+
+// envOrFile reads a plain env var or, if <NAME>_FILE is set, the contents
+// of that file. This lets secrets be injected as mounted files instead of
+// being exposed as container env vars (and therefore in etcd).
+func envOrFile(k string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	path := os.Getenv(k + "_FILE")
+	if path == "" {
+		return ""
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("failed to read %s_FILE %q: %v", k, path, err)
+		return ""
+	}
+	return string(b)
+}
+
+// ensureInitialLocalUser creates a bootstrap local account when
+// LOCAL_AUTH_INITIAL_USERNAME and LOCAL_AUTH_INITIAL_PASSWORD are set.
+func ensureInitialLocalUser(st store.Datastore) {
+	username := strings.ToLower(strings.TrimSpace(envOrFile("LOCAL_AUTH_INITIAL_USERNAME")))
+	password := strings.TrimRight(envOrFile("LOCAL_AUTH_INITIAL_PASSWORD"), "\r\n")
+	if username == "" || password == "" {
+		return
+	}
+	if _, err := st.UserByUsername(username); err == nil {
+		return // already exists
+	}
+	email := strings.ToLower(strings.TrimSpace(os.Getenv("LOCAL_AUTH_INITIAL_EMAIL")))
+	if email == "" {
+		if strings.Contains(username, "@") {
+			email = username
+		} else {
+			email = username + "@local"
+		}
+	}
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		log.Printf("failed to hash initial local user password: %v", err)
+		return
+	}
+	u, err := st.CreateUser(email, username, username, hash, "admin")
+	if err != nil {
+		log.Printf("failed to create initial local user: %v", err)
+		return
+	}
+	st.CreateOrg(u.ID, username+"'s workspace")
+	log.Printf("created initial local user: %s", username)
 }
 
 func cors(next http.Handler) http.Handler {

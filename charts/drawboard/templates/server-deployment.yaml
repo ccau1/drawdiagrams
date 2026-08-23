@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: server
-          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"
+          image: {{ include "drawboard.image" (dict "image" .Values.server.image) | quote }}
           imagePullPolicy: {{ .Values.server.image.pullPolicy }}
           ports:
             - containerPort: 8080
@@ -37,6 +37,53 @@ spec:
                   name: {{ include "drawboard.jwtSecretName" . }}
                   key: secret
             {{- end }}
+            {{- if and .Values.server.auth.initialUsername .Values.server.auth.initialPassword }}
+            - name: LOCAL_AUTH_INITIAL_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "drawboard.localAuthSecretName" . }}
+                  key: username
+            - name: LOCAL_AUTH_INITIAL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "drawboard.localAuthSecretName" . }}
+                  key: password
+            {{- if .Values.server.auth.initialEmail }}
+            - name: LOCAL_AUTH_INITIAL_EMAIL
+              value: {{ .Values.server.auth.initialEmail | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.server.oauth.enabled }}
+            - name: OAUTH_LOCAL_ENABLED
+              value: {{ .Values.server.oauth.localEnabled | quote }}
+            {{- if .Values.server.oauth.redirectUrl }}
+            - name: OAUTH_REDIRECT_URL
+              value: {{ .Values.server.oauth.redirectUrl | quote }}
+            {{- end }}
+            {{- range $provider, $cfg := .Values.server.oauth.providers }}
+            - name: OAUTH_{{ upper $provider }}_ENABLED
+              value: {{ $cfg.enabled | quote }}
+            {{- if $cfg.clientId }}
+            - name: OAUTH_{{ upper $provider }}_CLIENT_ID
+              value: {{ $cfg.clientId | quote }}
+            {{- end }}
+            {{- if $cfg.clientSecret }}
+            - name: OAUTH_{{ upper $provider }}_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "drawboard.fullname" $ }}-oauth
+                  key: {{ $provider }}-client-secret
+            {{- end }}
+            {{- if $cfg.redirectUrl }}
+            - name: OAUTH_{{ upper $provider }}_REDIRECT_URL
+              value: {{ $cfg.redirectUrl | quote }}
+            {{- end }}
+            {{- if $cfg.issuer }}
+            - name: OAUTH_{{ upper $provider }}_ISSUER
+              value: {{ $cfg.issuer | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
             {{- range $k, $v := .Values.server.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
@@ -53,7 +100,13 @@ spec:
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 20
+          {{- if .Values.server.extraVolumeMounts }}
+          volumeMounts: {{ .Values.server.extraVolumeMounts | toYaml | nindent 12 }}
+          {{- end }}
           resources: {{ .Values.server.resources | toYaml | nindent 12 }}
+      {{- if .Values.server.extraVolumes }}
+      volumes: {{ .Values.server.extraVolumes | toYaml | nindent 8 }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

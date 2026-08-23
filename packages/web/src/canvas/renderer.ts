@@ -2,6 +2,7 @@
 // on demand (rAF-coalesced) — zero work when nothing changes.
 import type { CanvasTheme, El, Viewport } from "../types";
 import { drawElement } from "./draw";
+import { shapeFor } from "./shape-registry";
 import type { Scene } from "./scene";
 
 export interface Cursor { id: string; name: string; x: number; y: number; color: string; }
@@ -11,13 +12,21 @@ export class Renderer {
   dpr = Math.min(window.devicePixelRatio || 1, 2);
   private raf = 0;
   private needsRender = true;
+  showGrid = true;
 
   constructor(
     public canvas: HTMLCanvasElement,
     public scene: Scene,
     public vp: Viewport,
     public theme: CanvasTheme,
-    public extras: () => { selection: Set<string>; draft: El | null; cursors: Cursor[]; editingId: string | null; snapHints: { x: number; y: number }[] },
+    public extras: () => {
+      selection: Set<string>;
+      draft: El | null;
+      cursors: Cursor[];
+      editing: { id: string | null; field?: string };
+      snapHints: { x: number; y: number }[];
+      selRegion: { type: "rect"; x0: number; y0: number; x1: number; y1: number } | { type: "lasso"; points: number[] } | null;
+    },
   ) {
     this.ctx = canvas.getContext("2d")!;
   }
@@ -51,7 +60,7 @@ export class Renderer {
 
     // dot grid (skip when dots would be < 4px apart)
     const step = 24 * vp.zoom;
-    if (step >= 8) {
+    if (this.showGrid && step >= 8) {
       ctx.fillStyle = this.theme.gridColor;
       const ox = ((-vp.x * vp.zoom) % step + step) % step;
       const oy = ((-vp.y * vp.zoom) % step + step) % step;
@@ -66,8 +75,9 @@ export class Renderer {
     ctx.lineWidth = 1;
 
     const visible = this.scene.queryViewport(vp, w, h);
-    const { selection, draft, cursors, editingId, snapHints } = this.extras();
-    for (const el of visible) drawElement(ctx, el, el.id === editingId);
+    const { selection, draft, cursors, editing, snapHints, selRegion } = this.extras();
+    const hideText = (el: El) => el.id === editing.id ? editing.field ?? true : false;
+    for (const el of visible) drawElement(ctx, el, hideText(el));
 
     if (draft) drawElement(ctx, draft);
 
@@ -81,7 +91,7 @@ export class Renderer {
       }
     }
 
-    // selection boxes
+    // selection boxes + per-shape handles
     if (selection.size) {
       ctx.strokeStyle = this.theme.selectionBox;
       ctx.lineWidth = 1.5 / vp.zoom;
@@ -93,24 +103,45 @@ export class Renderer {
         ctx.strokeRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
         ctx.setLineDash([]);
         ctx.fillStyle = "#ffffff";
-        if (selection.size === 1 && (el.type === "line" || el.type === "arrow") && el.points) {
-          // vertex handles: start / middle / end (draggable)
-          for (let i = 0; i + 1 < el.points.length; i += 2) {
-            ctx.beginPath();
-            ctx.arc(el.x + el.points[i], el.y + el.points[i + 1], 5 / vp.zoom, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.stroke();
-          }
-        } else if (selection.size === 1) {
-          for (const [hx, hy] of handles(b)) {
-            ctx.fillRect(hx - 4 / vp.zoom, hy - 4 / vp.zoom, 8 / vp.zoom, 8 / vp.zoom);
-            ctx.strokeRect(hx - 4 / vp.zoom, hy - 4 / vp.zoom, 8 / vp.zoom, 8 / vp.zoom);
+        if (selection.size === 1) {
+          const hs = shapeFor(el).handles(el);
+          for (const h of hs) {
+            if (h.role === "vertex") {
+              ctx.beginPath();
+              ctx.arc(h.x, h.y, 5 / vp.zoom, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.stroke();
+            } else {
+              const s = 4 / vp.zoom;
+              ctx.fillRect(h.x - s, h.y - s, s * 2, s * 2);
+              ctx.strokeRect(h.x - s, h.y - s, s * 2, s * 2);
+            }
           }
         }
         ctx.setLineDash([5 / vp.zoom, 4 / vp.zoom]);
       }
       ctx.setLineDash([]);
     }
+
+    // live selection region while dragging on empty space
+    if (selRegion) {
+      ctx.strokeStyle = this.theme.selectionBox;
+      ctx.lineWidth = 1 / vp.zoom;
+      ctx.setLineDash([5 / vp.zoom, 4 / vp.zoom]);
+      if (selRegion.type === "rect") {
+        ctx.strokeRect(selRegion.x0, selRegion.y0, selRegion.x1 - selRegion.x0, selRegion.y1 - selRegion.y0);
+      } else if (selRegion.points.length > 2) {
+        ctx.beginPath();
+        ctx.moveTo(selRegion.points[0], selRegion.points[1]);
+        for (let i = 2; i + 1 < selRegion.points.length; i += 2) {
+          ctx.lineTo(selRegion.points[i], selRegion.points[i + 1]);
+        }
+        ctx.closePath();
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    }
+
     ctx.restore();
 
     // remote cursors (screen space)
@@ -128,28 +159,9 @@ export class Renderer {
 }
 
 export function elBoundsPad(el: El) {
-  const pad = 4 + el.strokeWidth;
-  if ((el.type === "line" || el.type === "arrow" || el.type === "freedraw") && el.points?.length) {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (let i = 0; i + 1 < el.points.length; i += 2) {
-      x0 = Math.min(x0, el.x + el.points[i]); x1 = Math.max(x1, el.x + el.points[i]);
-      y0 = Math.min(y0, el.y + el.points[i + 1]); y1 = Math.max(y1, el.y + el.points[i + 1]);
-    }
-    return { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad };
-  }
-  return {
-    x0: Math.min(el.x, el.x + el.w) - pad, y0: Math.min(el.y, el.y + el.h) - pad,
-    x1: Math.max(el.x, el.x + el.w) + pad, y1: Math.max(el.y, el.y + el.h) + pad,
-  };
-}
-
-export function handles(b: { x0: number; y0: number; x1: number; y1: number }) {
-  const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
-  return [
-    [b.x0, b.y0], [cx, b.y0], [b.x1, b.y0],
-    [b.x1, cy], [b.x1, b.y1], [cx, b.y1],
-    [b.x0, b.y1], [b.x0, cy],
-  ] as [number, number][];
+  const b = shapeFor(el).bounds(el);
+  const pad = 4;
+  return { x0: b.x0 - pad, y0: b.y0 - pad, x1: b.x1 + pad, y1: b.y1 + pad };
 }
 
 export const CURSOR_COLORS = ["#e0533d", "#2f9e44", "#1971c2", "#9c36b5", "#f08c00", "#0c8599", "#c2255c"];

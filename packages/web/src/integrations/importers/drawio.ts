@@ -1,7 +1,7 @@
 // draw.io (.drawio / .xml) importer — contributed by the uml-shapes
 // integration's web side. Parses mxfile/mxGraphModel XML into elements.
-import type { El } from "../types";
-import { uid } from "../types";
+import type { AppState, El, ImportResult } from "../../types";
+import { uid } from "../../types";
 
 const STYLE_COLORS: Record<string, string> = {
   fillColor: "fill", strokeColor: "stroke", fontColor: "font",
@@ -24,15 +24,25 @@ function decode(s: string): string {
   } catch { return s.replace(/<[^>]+>/g, " ").trim(); }
 }
 
-/** Parse draw.io XML text into board elements. */
-export function importDrawio(xmlText: string): El[] {
+/** Parse draw.io XML text into board elements and optional appState. */
+export function importDrawio(xmlText: string): ImportResult {
   const doc = new DOMParser().parseFromString(xmlText, "text/xml");
   if (doc.querySelector("parsererror")) throw new Error("Invalid XML file");
   const root = doc.querySelector("mxGraphModel root") || doc.querySelector("root");
+  const graph = doc.querySelector("mxGraphModel");
   if (!root) throw new Error("No mxGraphModel found — is this a draw.io file?");
+
+  const appState: AppState = {};
+  if (graph) {
+    const bg = graph.getAttribute("background");
+    if (bg && bg !== "none") appState.background = bg;
+    const grid = graph.getAttribute("grid");
+    if (grid) appState.grid = grid === "1";
+  }
 
   const els: El[] = [];
   const cellPos = new Map<string, { x: number; y: number; w: number; h: number }>();
+  const cellElIds = new Map<string, string>();
 
   for (const cell of root.querySelectorAll("mxCell")) {
     const style = parseStyle(cell.getAttribute("style") || "");
@@ -50,10 +60,12 @@ export function importDrawio(xmlText: string): El[] {
     if (cell.getAttribute("vertex") === "1" && geo) {
       const x = +geo.getAttribute("x")! || 0, y = +geo.getAttribute("y")! || 0;
       const w = +geo.getAttribute("width")! || 120, h = +geo.getAttribute("height")! || 60;
-      cellPos.set(cell.getAttribute("id") || "", { x, y, w, h });
+      const cellId = cell.getAttribute("id") || "";
+      cellPos.set(cellId, { x, y, w, h });
 
       let type: El["type"] = "rect";
       let shape: string | undefined;
+      let image: string | undefined;
       const sName = style.shape || "";
       if (style.ellipse === "1" || sName === "ellipse") type = "ellipse";
       if (sName === "rhombus" || style.rhombus === "1") type = "diamond";
@@ -62,18 +74,27 @@ export function importDrawio(xmlText: string): El[] {
       if (sName === "note") { type = "shape"; shape = "uml-note"; }
       if (sName === "folder" || sName === "package") { type = "shape"; shape = "uml-package"; }
       if (sName === "component") { type = "shape"; shape = "uml-component"; }
+      if (sName === "image" || style.image) { type = "image"; image = style.image; }
       if (style.html === "1" && sName === "" && style.text === "1") {
         type = "text";
       }
-      els.push(mk({
-        type, x, y, w, h, shape,
+      const textAlign = style.align === "left" ? "left" : style.align === "right" ? "right" : "center";
+      const link = cell.getAttribute("link") || undefined;
+      const el = mk({
+        type, x, y, w, h, shape, image,
         text: value || undefined,
         fontSize: parseInt(style.fontSize || "14", 10),
-        fill: type === "text" ? "transparent" : mk({}).fill,
-      }));
+        textAlign,
+        link,
+        fill: type === "text" || type === "image" ? "transparent" : mk({}).fill,
+      });
+      els.push(el);
+      cellElIds.set(cellId, el.id);
     } else if (cell.getAttribute("edge") === "1" && geo) {
-      const src = cellPos.get(cell.getAttribute("source") || "");
-      const tgt = cellPos.get(cell.getAttribute("target") || "");
+      const sourceId = cell.getAttribute("source") || "";
+      const targetId = cell.getAttribute("target") || "";
+      const src = cellPos.get(sourceId);
+      const tgt = cellPos.get(targetId);
       const pts: number[] = [];
       const sp = geo.querySelector('mxPoint[as="sourcePoint"]');
       const tp = geo.querySelector('mxPoint[as="targetPoint"]');
@@ -90,12 +111,27 @@ export function importDrawio(xmlText: string): El[] {
       for (const p of wp) pts.push(+p.getAttribute("x")! - minX, +p.getAttribute("y")! - minY);
       pts.push(end.x - minX, end.y - minY);
       const isArrow = style.endArrow !== "none";
-      els.push(mk({
+      const textAlign = style.align === "left" ? "left" : style.align === "right" ? "right" : "center";
+      const link = cell.getAttribute("link") || undefined;
+      const extra: Partial<El> = {
         type: isArrow ? "arrow" : "line",
         x: minX, y: minY, w: 0, h: 0, points: pts,
         fill: "transparent",
         text: value || undefined,
-      }));
+        textAlign,
+        link,
+      };
+      if (src) {
+        const fx = (start.x - src.x) / (src.w || 1);
+        const fy = (start.y - src.y) / (src.h || 1);
+        extra.bindStart = { id: cellElIds.get(sourceId) || sourceId, fx, fy };
+      }
+      if (tgt) {
+        const fx = (end.x - tgt.x) / (tgt.w || 1);
+        const fy = (end.y - tgt.y) / (tgt.h || 1);
+        extra.bindEnd = { id: cellElIds.get(targetId) || targetId, fx, fy };
+      }
+      els.push(mk(extra));
     }
   }
 
@@ -105,5 +141,5 @@ export function importDrawio(xmlText: string): El[] {
     const minY = Math.min(...els.map((e) => e.y));
     for (const e of els) { e.x -= minX - 60; e.y -= minY - 60; }
   }
-  return els;
+  return { elements: els, appState: Object.keys(appState).length ? appState : undefined };
 }

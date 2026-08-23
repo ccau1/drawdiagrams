@@ -2,35 +2,50 @@
 // culling, rAF-coalesced draws), full toolset, styles, themes, minimap,
 // realtime collaboration, reactions, plugin draws, mobile touch support.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, getToken } from "../api";
+import { api, ApiError, getToken, REDIRECT_AFTER_LOGIN_KEY, setToken } from "../api";
 import type { AppCtx } from "../App";
-import { Scene, elBounds, elMidpoint, snapKeyPoints, snapPoint } from "../canvas/scene";
-import { Renderer, colorFor, handles, type Cursor } from "../canvas/renderer";
+import { onPastedImageLoad } from "../canvas/draw-utils";
+import { Scene, elBounds, elMidpoint, pointInPolygon, snapKeyPoints, snapPoint } from "../canvas/scene";
+import { Renderer, colorFor, type Cursor } from "../canvas/renderer";
+import { renderThumbnail } from "../canvas/snapshot";
+import type { Handle } from "../canvas/shape";
+import { shapeFor } from "../canvas/shape-registry";
 import { CollabClient, type WireMsg } from "../collab";
-import type { BoardFull, CanvasTheme, DrawDecl, El } from "../types";
+import type { AppState, BoardFull, CanvasTheme, DrawDecl, El } from "../types";
 import { uid } from "../types";
 import Minimap from "../components/Minimap";
 import ReactionLayer, { useReactionLayer } from "../components/ReactionLayer";
 import ThemePicker from "../components/ThemePicker";
-import { afterPlace, allImporters, drawPropOverride, runAction } from "../integrations";
+import { applyTheme } from "../theme";
+import PluginsPanel from "../components/PluginsPanel";
+import { ChevronDownIcon, SearchIcon } from "../components/icons";
+import { afterPlace, allExporters, allImporters, drawPropOverride, findImporter, runAction, runExporter } from "../integrations";
 import { useT } from "../i18n";
 import LocaleSwitcher from "../components/LocaleSwitcher";
 import { cloneForPaste, parseElements, serializeElements } from "../clipboard";
 import PropsPanel from "../components/PropsPanel";
+import { Tooltip } from "react-tooltip";
+import "react-tooltip/dist/react-tooltip.css";
 import {
   BUILTIN_TOOLS, drawToToolDef, propsForEl,
   type LayerOp, type PropSpec, type Style, type ToolDef,
 } from "../tools";
 
+const MenuIcon = ({ d, className = "menu-icon" }: { d: string; className?: string }) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d={d} />
+  </svg>
+);
+
 type Tool =
-  | "select" | "rect" | "ellipse" | "diamond"
+  | "select" | "hand" | "rect" | "ellipse" | "diamond"
   | "line" | "arrow" | "freedraw" | "text" | "eraser";
 
 // Letter hotkeys, plus number hotkeys derived from the tool definitions
 // (Excalidraw layout: 1 select, 2 rect, 3 diamond, 4 ellipse, 5 arrow,
 // 6 line, 7 freedraw, 8 text, 0 eraser).
 const TOOL_KEYS: Record<string, Tool> = {
-  v: "select", r: "rect", e: "ellipse", d: "diamond",
+  v: "select", h: "hand", r: "rect", e: "ellipse", d: "diamond",
   l: "line", a: "arrow", f: "freedraw", t: "text", x: "eraser",
   ...Object.fromEntries(
     BUILTIN_TOOLS.filter((t) => t.hotkey).map((t) => [t.hotkey!, t.id as Tool]),
@@ -52,7 +67,7 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
   const [pluginTool, setPluginTool] = useState<DrawDecl | null>(null);
   const [style, setStyle] = useState<Style>({
     stroke: "#1b1b1f", fill: "transparent", strokeWidth: 2, opacity: 1, strokeType: "solid", fontSize: 20,
-    lineType: "curve", headStart: "none", headEnd: "arrow", edges: "sharp",
+    textAlign: "left", lineType: "curve", headStart: "none", headEnd: "arrow", edges: "sharp", fillPattern: "solid",
   });
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [draft, setDraft] = useState<El | null>(null);
@@ -62,11 +77,25 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
   const [themeId, setThemeId] = useState(localStorage.getItem("drawboard.theme") || "light");
   const [showMinimap, setShowMinimap] = useState(true);
   const [showReactions, setShowReactions] = useState(false);
+  const [showGrid, setShowGrid] = useState(false);
   const [showShare, setShowShare] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [showStyleBar, setShowStyleBar] = useState(true);
   const [size, setSize] = useState({ w: innerWidth, h: innerHeight });
-  const [textEdit, setTextEdit] = useState<{ id: string | null; x: number; y: number; value: string; center?: boolean } | null>(null);
+  const [textEdit, setTextEdit] = useState<{ id: string | null; x: number; y: number; value: string; align?: "left" | "center" | "right"; field?: string; multiline?: boolean; width?: number } | null>(null);
   const [tick, setTick] = useState(0); // force minimap repaint trigger
+  const [linkBubble, setLinkBubble] = useState<{ url: string; x: number; y: number } | null>(null);
+  const [libSearch, setLibSearch] = useState("");
+  const [openCats, setOpenCats] = useState<Set<string>>(new Set());
+  const [showShapePlugins, setShowShapePlugins] = useState(false);
+  const [showLibPanel, setShowLibPanel] = useState(true);
+  const [panning, setPanning] = useState(false);
+
+  const selRegionRef = useRef<
+    | { type: "rect"; x0: number; y0: number; x1: number; y1: number }
+    | { type: "lasso"; points: number[] }
+    | null
+  >(null);
 
   const { floats, spawn } = useReactionLayer();
   const selectionRef = useRef(selection); selectionRef.current = selection;
@@ -76,6 +105,7 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
     [ctx.themes, themeId],
   );
   const themeRef = useRef(theme); themeRef.current = theme;
+  const showGridRef = useRef(showGrid); showGridRef.current = showGrid;
 
   const pluginDraws = useMemo(() => ctx.decls.flatMap((d) => d.draws || []), [ctx.decls]);
   const reactions = useMemo(() => ctx.decls.flatMap((d) => d.reactions || []), [ctx.decls]);
@@ -120,7 +150,8 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
   const scheduleSave = useCallback(() => {
     clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
-      api.saveBoard(boardId, sceneRef.current.all(), { theme: themeRef.current.background }).catch(() => {});
+      const appState: AppState = { background: themeRef.current.background, grid: showGridRef.current };
+      api.saveBoard(boardId, sceneRef.current.all(), appState).catch(() => {});
     }, 1200);
   }, [boardId]);
 
@@ -193,18 +224,53 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
       if (disposed) return;
       setMeta(b);
       sceneRef.current.replaceAll(Array.isArray(b.elements) ? b.elements : []);
+      // Restore saved canvas settings (background / grid).
+      const as = b.appState || {};
+      const bg = as.background || (as as any).theme;
+      if (bg) {
+        const match = ctx.themes.find((t) => t.canvas.background === bg);
+        if (match) {
+          setThemeId(match.id);
+          localStorage.setItem("drawboard.theme", match.id);
+          applyTheme(match);
+        }
+      }
+      if (typeof as.grid === "boolean") setShowGrid(as.grid);
       rerender();
-    }).catch((e) => alert(e.message));
+    }).catch((e) => {
+      const isAuthError = e instanceof ApiError && (e.status === 401 || e.status === 403);
+      if (isAuthError && (!getToken() || !ctx.user)) {
+        setToken("");
+        sessionStorage.setItem(REDIRECT_AFTER_LOGIN_KEY, location.hash);
+        location.hash = "#/login";
+        return;
+      }
+      alert(e instanceof Error ? e.message : String(e));
+    });
     const client = new CollabClient(boardId, handleWire, setOnline);
     collabRef.current = client;
-    return () => { disposed = true; client.close(); clearTimeout(saveTimer.current); };
+    return () => {
+      disposed = true; client.close(); clearTimeout(saveTimer.current);
+      // snapshot the scene as the board card thumbnail; fire-and-forget
+      if (getToken()) {
+        const thumb = renderThumbnail(sceneRef.current.all(), themeRef.current.background);
+        if (thumb) api.saveThumbnail(boardId, thumb).catch(() => {});
+      }
+    };
   }, [boardId, handleWire, rerender]);
 
   // --- renderer lifecycle ---
   useEffect(() => {
     const canvas = canvasRef.current!, wrap = wrapRef.current!;
     const r = new Renderer(canvas, sceneRef.current, vpRef.current, themeRef.current,
-      () => ({ selection: selectionRef.current, draft: draftRef.current, cursors: cursorsRef.current, editingId: textEditRef.current?.id ?? null, snapHints: snapHintsRef.current }));
+      () => ({
+        selection: selectionRef.current,
+        draft: draftRef.current,
+        cursors: cursorsRef.current,
+        editing: { id: textEditRef.current?.id ?? null, field: textEditRef.current?.field },
+        snapHints: snapHintsRef.current,
+        selRegion: selRegionRef.current,
+      }));
     rendererRef.current = r;
     const ro = new ResizeObserver(() => {
       const rect = wrap.getBoundingClientRect();
@@ -219,17 +285,46 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
     if (rendererRef.current) { rendererRef.current.theme = theme; rerender(); }
   }, [theme, rerender]);
 
+  useEffect(() => {
+    if (rendererRef.current) { rendererRef.current.showGrid = showGrid; rerender(); }
+  }, [showGrid, rerender]);
+
   // hide the element's canvas text while its editor is open
   useEffect(() => { rerender(); }, [textEdit, rerender]);
 
   // selection boxes are canvas-drawn — repaint whenever the selection changes
   useEffect(() => { rerender(); }, [selection, rerender]);
 
+  // Floating link bubble above a single selected element that has a link.
+  useEffect(() => {
+    if (selection.size !== 1) { setLinkBubble(null); return; }
+    const id = [...selection][0];
+    const el = sceneRef.current.get(id);
+    if (!el?.link) { setLinkBubble(null); return; }
+    const b = elBounds(el);
+    const { x, y, zoom } = vpRef.current;
+    setLinkBubble({
+      url: el.link,
+      x: ((b.x0 + b.x1) / 2 - x) * zoom,
+      y: (b.y0 - y) * zoom - 8,
+    });
+  }, [selection, tick]);
+
   useEffect(() => {
     const onTheme = (e: Event) => setThemeId((e as CustomEvent).detail);
     addEventListener("themechange", onTheme);
     return () => removeEventListener("themechange", onTheme);
   }, []);
+
+  // close the hamburger menu when clicking outside of it
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (e: MouseEvent) => {
+      if (!(e.target as Element).closest(".nav-float")) setMenuOpen(false);
+    };
+    addEventListener("mousedown", close);
+    return () => removeEventListener("mousedown", close);
+  }, [menuOpen]);
 
   const draftRef = useRef(draft); draftRef.current = draft;
   const cursorsRef = useRef(cursors); cursorsRef.current = cursors;
@@ -238,11 +333,13 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
 
   // --- interaction state machine ---
   const gesture = useRef<{
-    mode: "none" | "draw" | "move" | "resize" | "point" | "label" | "pan" | "maybe";
+    mode: "none" | "draw" | "move" | "resize" | "label" | "pan" | "maybe" | "selectRect" | "lasso";
     startWX: number; startWY: number; orig: Map<string, El>;
-    pointerId: number; moved: boolean; handle: number;
+    pointerId: number; moved: boolean; handle: Handle | null;
     pendingToggle: string | null; // shift+click multi-select candidate
-  }>({ mode: "none", startWX: 0, startWY: 0, orig: new Map(), pointerId: -1, moved: false, handle: -1, pendingToggle: null });
+    undoSnapshot: El[] | null; // full scene captured at pointer-down for undo after drag
+    lasso?: number[];
+  }>({ mode: "none", startWX: 0, startWY: 0, orig: new Map(), pointerId: -1, moved: false, handle: null, pendingToggle: null, undoSnapshot: null });
 
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const pinch = useRef<{ d: number; zoom: number } | null>(null);
@@ -258,9 +355,11 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
     strokeWidth: styleRef.current.strokeWidth, opacity: styleRef.current.opacity,
     dashed: styleRef.current.strokeType === "dashed", // legacy field
     strokeType: styleRef.current.strokeType, fontSize: styleRef.current.fontSize,
+    textAlign: styleRef.current.textAlign,
     lineType: styleRef.current.lineType,
     headStart: styleRef.current.headStart, headEnd: styleRef.current.headEnd,
     edges: styleRef.current.edges,
+    fillPattern: styleRef.current.fillPattern,
     roughness: themeRef.current.roughness,
     seed: Math.floor(Math.random() * 2 ** 31), updatedAt: Date.now(), ...extra,
   });
@@ -317,16 +416,13 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
     g.pointerId = e.pointerId; g.moved = false;
     g.startWX = wx; g.startWY = wy;
     g.orig = new Map();
+    g.undoSnapshot = null;
 
-    const pan = e.button === 1 || (e.shiftKey && tool === "select" && !pluginTool);
+    const pan = e.button === 1 || tool === "hand";
     if (pan) {
       g.mode = "pan";
-      // shift+click (no drag) toggles multi-select; shift+drag still pans
+      setPanning(true);
       g.pendingToggle = null;
-      if (e.shiftKey && e.button !== 1) {
-        const hit = sceneRef.current.hitTest(wx, wy, 10 / vpRef.current.zoom);
-        if (hit) g.pendingToggle = hit.id;
-      }
       return;
     }
 
@@ -359,31 +455,32 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
     }
 
     if (tool === "select") {
-      // handle interactions (vertex/label/resize) only for a single selection —
-      // otherwise their zones eat clicks meant for other elements
+      g.undoSnapshot = sceneRef.current.all().map((e) => ({ ...e }));
+      // handle interactions only for a single selection — otherwise their
+      // zones eat clicks meant for other elements.
       const th = 8 / vpRef.current.zoom;
       for (const id of selectionRef.current.size === 1 ? selectionRef.current : []) {
         let el = sceneRef.current.get(id);
-        if (!el || (el.type !== "line" && el.type !== "arrow") || !el.points) continue;
-        if (el.points.length === 4) {
-          // migrate 2-point lines to 3 points (start/middle/end)
-          const [x0, y0, x1, y1] = el.points;
-          el = { ...el, points: [x0, y0, (x0 + x1) / 2, (y0 + y1) / 2, x1, y1], updatedAt: Date.now() };
-          sceneRef.current.upsert(el);
+        if (!el) continue;
+        const shape = shapeFor(el);
+
+        // let each shape normalize itself on selection (e.g. line 2pt -> 3pt)
+        const normalized = shape.normalize?.(el);
+        if (normalized) {
+          sceneRef.current.upsert(normalized);
+          el = normalized;
         }
-        const pts = el.points!;
-        const vi: number[] = [];
-        for (let i = 0; i + 1 < pts.length; i += 2) vi.push(i);
-        const hitVi = vi.find((i) =>
-          Math.abs(wx - (el!.x + pts[i])) <= th && Math.abs(wy - (el!.y + pts[i + 1])) <= th);
-        if (hitVi !== undefined) {
-          snapshot();
-          g.mode = "point";
-          g.handle = hitVi;
-          g.orig.set(id, { ...el, points: [...pts] });
+
+        const handle = shape.handles(el).find((h) => Math.abs(wx - h.x) <= th && Math.abs(wy - h.y) <= th);
+        if (handle) {
+          g.mode = "resize";
+          g.handle = handle;
+          g.orig.set(id, { ...el, points: el.points ? [...el.points] : undefined });
           return;
         }
-        if (el.text) {
+
+        // line/arrow label drag remains a special handle-like interaction
+        if ((el.type === "line" || el.type === "arrow") && el.text) {
           const m = elMidpoint(el);
           const ax = m.x + (el.labelDx || 0), ay = m.y + (el.labelDy || 0);
           const fs = el.fontSize || 16;
@@ -391,28 +488,18 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
           const hw = Math.max(...lines.map((l) => l.length), 1) * fs * 0.3 + th;
           const hh = (lines.length * fs * 1.3) / 2 + th;
           if (Math.abs(wx - ax) <= hw && Math.abs(wy - ay) <= hh) {
-            snapshot();
             g.mode = "label";
-            g.orig.set(id, { ...el, points: [...pts] });
+            g.orig.set(id, { ...el, points: [...el.points!] });
             return;
           }
         }
       }
-      // resize handles of the current selection take priority
-      for (const id of selectionRef.current.size === 1 ? selectionRef.current : []) {
-        const el = sceneRef.current.get(id);
-        if (!el || !["rect", "ellipse", "diamond", "icon", "shape"].includes(el.type)) continue;
-        const hs = handles(elBounds(el));
-        const hi = hs.findIndex(([hx, hy]) => Math.abs(wx - hx) <= th && Math.abs(wy - hy) <= th);
-        if (hi >= 0) {
-          snapshot();
-          g.mode = "resize";
-          g.handle = hi;
-          g.orig.set(id, { ...el });
-          return;
-        }
-      }
       const hit = sceneRef.current.hitTest(wx, wy, 10 / vpRef.current.zoom);
+      if (e.shiftKey && hit) {
+        g.mode = "maybe";
+        g.pendingToggle = hit.id;
+        return;
+      }
       if (hit && selectionRef.current.has(hit.id)) {
         g.mode = "move";
         for (const id of selectionRef.current) {
@@ -424,9 +511,14 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
         g.mode = "move";
         g.orig.set(hit.id, { ...hit, points: hit.points ? [...hit.points] : undefined });
       } else {
-        // empty space: click clears the selection, drag pans the canvas
+        // empty space: drag to create a selection region (lasso with Alt)
         setSelection(new Set());
-        g.mode = "pan";
+        if (e.altKey) {
+          g.mode = "lasso";
+          g.lasso = [wx, wy];
+        } else {
+          g.mode = "selectRect";
+        }
       }
       return;
     }
@@ -492,6 +584,18 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
       rerender();
       return;
     }
+    if (g.mode === "selectRect") {
+      selRegionRef.current = { type: "rect", x0: g.startWX, y0: g.startWY, x1: wx, y1: wy };
+      rerender();
+      return;
+    }
+    if (g.mode === "lasso") {
+      const pts = [...(g.lasso || []), wx, wy];
+      g.lasso = pts;
+      selRegionRef.current = { type: "lasso", points: pts };
+      rerender();
+      return;
+    }
     if (g.mode === "move") {
       const dx = wx - g.startWX, dy = wy - g.startWY;
       for (const [id, orig] of g.orig) {
@@ -502,72 +606,52 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
       rerender();
       return;
     }
-    if (g.mode === "resize") {
+    if (g.mode === "resize" && g.handle) {
       const [id, orig] = [...g.orig.entries()][0];
-      // handles: 0 TL, 1 T, 2 TR, 3 R, 4 BR, 5 B, 6 BL, 7 L
-      const ox0 = Math.min(orig.x, orig.x + orig.w), ox1 = Math.max(orig.x, orig.x + orig.w);
-      const oy0 = Math.min(orig.y, orig.y + orig.h), oy1 = Math.max(orig.y, orig.y + orig.h);
-      let x0 = ox0, x1 = ox1, y0 = oy0, y1 = oy1;
-      if ([0, 6, 7].includes(g.handle)) x0 = wx;
-      if ([2, 3, 4].includes(g.handle)) x1 = wx;
-      if ([0, 1, 2].includes(g.handle)) y0 = wy;
-      if ([4, 5, 6].includes(g.handle)) y1 = wy;
-      if (e.shiftKey) {
-        // keep aspect ratio, anchored at the opposite corner/edge
-        const ow = Math.max(1, ox1 - ox0), oh = Math.max(1, oy1 - oy0);
-        const s = Math.max(Math.abs(x1 - x0) / ow, Math.abs(y1 - y0) / oh);
-        const nw = ow * s, nh = oh * s;
-        if ([2, 3, 4].includes(g.handle)) x1 = ox0 + nw; else if ([0, 6, 7].includes(g.handle)) x0 = ox1 - nw;
-        else { x0 = (ox0 + ox1) / 2 - nw / 2; x1 = x0 + nw; }
-        if ([4, 5, 6].includes(g.handle)) y1 = oy0 + nh; else if ([0, 1, 2].includes(g.handle)) y0 = oy1 - nh;
-        else { y0 = (oy0 + oy1) / 2 - nh / 2; y1 = y0 + nh; }
-      }
-      const el = {
-        ...orig,
-        x: Math.min(x0, x1), y: Math.min(y0, y1),
-        w: Math.max(4, Math.abs(x1 - x0)), h: Math.max(4, Math.abs(y1 - y0)),
-        updatedAt: Date.now(),
-      };
-      sceneRef.current.upsert(el);
-      updateBoundArrows(el);
-      rerender();
-      return;
-    }
-    if (g.mode === "point") {
-      const [id, orig] = [...g.orig.entries()][0];
-      const pts = [...(orig.points || [])];
+      const shape = shapeFor(orig);
       let px = wx, py = wy;
-      const upd = { ...orig, points: pts, updatedAt: Date.now() };
-      const isEndpoint = g.handle === 0 || g.handle === pts.length - 2;
-      if (isEndpoint && orig.type === "arrow") {
-        // show the magnetic points of nearby shapes while dragging
+
+      // arrow endpoint magnet-snap stays in Board because it needs the scene
+      const pts = orig.points || [];
+      const lastVertex = pts.length / 2 - 1;
+      const isArrowEndpoint = shape.id === "arrow" && g.handle.role === "vertex" &&
+        (g.handle.index === 0 || g.handle.index === lastVertex);
+      if (isArrowEndpoint) {
         const R = 24 / vpRef.current.zoom;
         snapHintsRef.current = sceneRef.current
           .query(wx - R, wy - R, wx + R, wy + R)
           .filter((el) => el.id !== id)
           .flatMap((el) => snapKeyPoints(el).map(([x, y]) => ({ x, y })));
         const s = snapPoint(sceneRef.current, wx, wy, id, 12 / vpRef.current.zoom, 6 / vpRef.current.zoom);
-        if (s) {
-          px = s.x; py = s.y;
-          const shape = sceneRef.current.get(s.id);
-          if (shape) {
-            // fractional position within the shape's bbox — survives move/resize
-            const x0 = Math.min(shape.x, shape.x + shape.w), x1 = Math.max(shape.x, shape.x + shape.w);
-            const y0 = Math.min(shape.y, shape.y + shape.h), y1 = Math.max(shape.y, shape.y + shape.h);
-            const b = { id: s.id, fx: (px - x0) / (x1 - x0 || 1), fy: (py - y0) / (y1 - y0 || 1) };
-            if (g.handle === 0) upd.bindStart = b; else upd.bindEnd = b;
-          }
-        } else {
-          // dragged away from any shape — detach this endpoint
-          if (g.handle === 0) delete upd.bindStart; else delete upd.bindEnd;
-        }
+        if (s) { px = s.x; py = s.y; }
       } else {
         snapHintsRef.current = [];
       }
-      pts[g.handle] = px - orig.x;
-      pts[g.handle + 1] = py - orig.y;
-      sceneRef.current.upsert(upd);
-      rerender();
+
+      const patch = shape.applyHandle(orig, g.handle, px, py, { shiftKey: e.shiftKey });
+      if (patch) {
+        const upd: El = { ...orig, ...patch, updatedAt: Date.now() };
+
+        // attach/detach arrow endpoint binding when snapped to a shape
+        if (isArrowEndpoint) {
+          const s = snapPoint(sceneRef.current, px, py, id, 12 / vpRef.current.zoom, 6 / vpRef.current.zoom);
+          if (s) {
+            const target = sceneRef.current.get(s.id);
+            if (target) {
+              const x0 = Math.min(target.x, target.x + target.w), x1 = Math.max(target.x, target.x + target.w);
+              const y0 = Math.min(target.y, target.y + target.h), y1 = Math.max(target.y, target.y + target.h);
+              const b = { id: s.id, fx: (px - x0) / (x1 - x0 || 1), fy: (py - y0) / (y1 - y0 || 1) };
+              if (g.handle.index === 0) upd.bindStart = b; else upd.bindEnd = b;
+            }
+          } else {
+            if (g.handle.index === 0) delete upd.bindStart; else delete upd.bindEnd;
+          }
+        }
+
+        sceneRef.current.upsert(upd);
+        updateBoundArrows(upd);
+        rerender();
+      }
       return;
     }
     if (g.mode === "label") {
@@ -628,20 +712,51 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
     if (pointers.current.size < 2) pinch.current = null;
     const g = gesture.current;
     if (e.pointerId !== g.pointerId) return;
+    const { x: wx, y: wy } = toWorld(e);
     if (snapHintsRef.current.length) { snapHintsRef.current = []; rerender(); }
 
     // shift+click without dragging: toggle the element in the selection
-    if (g.mode === "pan" && !g.moved && g.pendingToggle) {
+    if (g.mode === "maybe" && !g.moved && g.pendingToggle) {
       const id = g.pendingToggle;
       setSelection((s) => {
         const n = new Set(s);
         if (n.has(id)) n.delete(id); else n.add(id);
         return n;
       });
+    } else if (g.mode === "selectRect" || g.mode === "lasso") {
+      const ids = new Set<string>();
+      if (g.mode === "selectRect") {
+        const x0 = Math.min(g.startWX, wx), x1 = Math.max(g.startWX, wx);
+        const y0 = Math.min(g.startWY, wy), y1 = Math.max(g.startWY, wy);
+        for (const el of sceneRef.current.query(x0, y0, x1, y1)) {
+          const b = elBounds(el);
+          // only select elements fully enclosed by the bracket
+          if (b.x0 >= x0 && b.x1 <= x1 && b.y0 >= y0 && b.y1 <= y1) ids.add(el.id);
+        }
+      } else if (g.mode === "lasso" && g.lasso) {
+        const pts = g.lasso;
+        const xs = pts.filter((_, i) => i % 2 === 0);
+        const ys = pts.filter((_, i) => i % 2 === 1);
+        const x0 = Math.min(...xs), x1 = Math.max(...xs);
+        const y0 = Math.min(...ys), y1 = Math.max(...ys);
+        for (const el of sceneRef.current.query(x0, y0, x1, y1)) {
+          const b = elBounds(el);
+          // only select elements fully enclosed by the lasso
+          if (
+            pointInPolygon(b.x0, b.y0, pts) &&
+            pointInPolygon(b.x1, b.y0, pts) &&
+            pointInPolygon(b.x0, b.y1, pts) &&
+            pointInPolygon(b.x1, b.y1, pts)
+          ) ids.add(el.id);
+        }
+      }
+      setSelection(ids);
+      selRegionRef.current = null;
+      rerender();
     }
     g.pendingToggle = null;
 
-    if ((g.mode === "move" || g.mode === "resize" || g.mode === "point" || g.mode === "label") && g.moved) {
+    if ((g.mode === "move" || g.mode === "resize" || g.mode === "label") && g.moved) {
       for (const [id] of g.orig) {
         const el = sceneRef.current.get(id);
         if (el) { broadcastOp({ kind: "upsert", el }); }
@@ -653,7 +768,13 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
           broadcastOp({ kind: "upsert", el });
         }
       }
+      if (g.undoSnapshot) {
+        undoStack.current.push(g.undoSnapshot);
+        if (undoStack.current.length > 60) undoStack.current.shift();
+        redoStack.current = [];
+      }
       scheduleSave();
+      rerender();
     }
     if (g.mode === "draw" && draftRef.current) {
       const d = draftRef.current;
@@ -681,6 +802,7 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
       rerender();
     }
     g.mode = "none";
+    setPanning(false);
   };
 
   // wheel: zoom at cursor (ctrl) or pan
@@ -708,30 +830,17 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
     return () => c.removeEventListener("wheel", onWheel);
   }, [onWheel]);
 
-  // double-click → edit text (on shapes: centered; on empty space: create)
+  // double-click → shape-specific text edit target (empty space creates a text element)
   const onDblClick = (e: React.MouseEvent) => {
     const { x: wx, y: wy } = toWorld(e);
     const hit = sceneRef.current.hitTest(wx, wy, 10 / vpRef.current.zoom);
-    if (hit && (hit.type === "line" || hit.type === "arrow")) {
-      const m = elMidpoint(hit);
-      setTextEdit({
-        id: hit.id, x: m.x + (hit.labelDx || 0), y: m.y + (hit.labelDy || 0),
-        value: hit.text || "", center: true,
-      });
-    } else if (hit && ["text", "shape", "rect", "ellipse", "diamond"].includes(hit.type)) {
-      if (hit.type === "text") {
-        setTextEdit({ id: hit.id, x: hit.x, y: hit.y, value: hit.text || "" });
-      } else {
-        const b = elBounds(hit);
-        setTextEdit({
-          id: hit.id, x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2,
-          value: hit.text || "", center: true,
-        });
-      }
-    } else if (!hit) {
+    if (!hit) {
       const el = makeEl("text", wx, wy, { text: "", w: 200, h: 28 });
-      setTextEdit({ id: el.id, x: wx, y: wy, value: "" });
+      setTextEdit({ id: el.id, x: wx, y: wy, value: "", align: "center" });
+      return;
     }
+    const target = shapeFor(hit).doubleClick(hit, wx, wy);
+    if (target) setTextEdit({ id: hit.id, ...target });
   };
 
   const commitText = () => {
@@ -743,12 +852,18 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
     }
     snapshot();
     if (existing) {
-      const upd = { ...existing, text: textEdit.value };
-      if (existing.type === "line" || existing.type === "arrow") {
-        // keep the label offset relative to the midpoint
-        const m = elMidpoint(existing);
-        upd.labelDx = textEdit.x - m.x;
-        upd.labelDy = textEdit.y - m.y;
+      const upd = { ...existing, updatedAt: Date.now() };
+      if (textEdit.field) {
+        // write to a shape-specific data field (e.g. UML class compartments)
+        upd.data = { ...existing.data, [textEdit.field]: textEdit.value };
+      } else {
+        upd.text = textEdit.value;
+        if (existing.type === "line" || existing.type === "arrow") {
+          // keep the label offset relative to the midpoint
+          const m = elMidpoint(existing);
+          upd.labelDx = textEdit.x - m.x;
+          upd.labelDy = textEdit.y - m.y;
+        }
       }
       commitEl(upd);
     } else {
@@ -766,16 +881,60 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
   const flash = (msg: string) => { setToast(msg); setTimeout(() => setToast(""), 3500); };
   const lastPointer = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
-  const pasteFromClipboard = async () => {
-    let text = "";
-    try { text = await navigator.clipboard.readText(); } catch { /* permission */ }
-    if (!text) text = internalClip.current;
-    const els = parseElements(text);
-    if (!els || !els.length) { if (text) flash(tr("board.pasteFailed")); return; }
+  const pasteImage = async (file: File, wx: number, wy: number) => {
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error("Failed to read image"));
+      reader.readAsDataURL(file);
+    });
+    const el = await createImageElement(dataUrl, wx, wy);
+    snapshot();
+    sceneRef.current.upsert(el);
+    broadcastOp({ kind: "upsert", el });
+    setSelection(new Set([el.id]));
+    scheduleSave(); rerender();
+  };
+
+  const createImageElement = (dataUrl: string, wx: number, wy: number): Promise<El> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 400;
+        let w = img.naturalWidth, h = img.naturalHeight;
+        if (w > maxW) { h = (h * maxW) / w; w = maxW; }
+        resolve(makeEl("image", wx - w / 2, wy - h / 2, { w, h, image: dataUrl, fill: "transparent" }));
+      };
+      img.onerror = () => resolve(makeEl("image", wx - 100, wy - 75, { w: 200, h: 150, image: dataUrl, fill: "transparent" }));
+      img.src = dataUrl;
+    });
+  };
+
+  const handlePaste = async (e: ClipboardEvent) => {
+    const targetEl = e.target as HTMLElement;
+    if (textEdit || targetEl.tagName === "INPUT" || targetEl.tagName === "TEXTAREA") return;
+
+    const items = e.clipboardData?.items;
+    const files = e.clipboardData?.files;
+    const imageFile = files?.[0]?.type.startsWith("image/") ? files[0]
+      : (items ? Array.from(items).find((it) => it.type.startsWith("image/"))?.getAsFile() : undefined);
+
     const vp = vpRef.current, rect = wrapRef.current!.getBoundingClientRect();
     const target = lastPointer.current.x || lastPointer.current.y
       ? lastPointer.current
       : { x: vp.x + rect.width / vp.zoom / 2, y: vp.y + rect.height / vp.zoom / 2 };
+
+    if (imageFile) {
+      e.preventDefault();
+      await pasteImage(imageFile, target.x, target.y);
+      return;
+    }
+
+    const text = e.clipboardData?.getData("text/plain") || internalClip.current;
+    if (!text) return;
+    const els = parseElements(text);
+    if (!els || !els.length) { if (text) flash(tr("board.pasteFailed")); return; }
+    e.preventDefault();
     snapshot();
     const pasted = cloneForPaste(els, target.x, target.y);
     const ids = new Set<string>();
@@ -787,6 +946,9 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
     setSelection(ids);
     scheduleSave(); rerender();
   };
+
+  const handlePasteRef = useRef(handlePaste);
+  handlePasteRef.current = handlePaste;
 
   // keyboard
   useEffect(() => {
@@ -800,11 +962,6 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
           .then(() => flash(tr("board.copied", { count: els.length })))
           .catch(() => flash(tr("board.copied", { count: els.length }))); // clipboard may be blocked; still serialized internally
         internalClip.current = serializeElements(els);
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === "v") {
-        e.preventDefault();
-        pasteFromClipboard();
         return;
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.key === "z" && e.shiftKey))) { e.preventDefault(); redo(); return; }
@@ -827,6 +984,18 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
   });
+
+  // paste: images via clipboard data, text via tagged JSON / internal fallback
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => handlePasteRef.current(e);
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, []);
+
+  // repainted canvases once pasted raster images decode
+  useEffect(() => {
+    return onPastedImageLoad(() => { rerender(); setTick((t) => t + 1); });
+  }, [rerender]);
 
   // style changes apply to current selection too
   const applyStyle = (patch: Partial<Style>) => {
@@ -858,13 +1027,26 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
     collabRef.current?.send({ type: "reaction", payload: { emoji, x: w.x, y: w.y } });
   };
 
-  // draw.io import (provided by integration web logic — see uml-shapes).
+  const pendingImport = useRef<{ name: string; id: string } | null>(null);
+
+  const startImport = (name: string, id: string, extensions: string[]) => {
+    pendingImport.current = { name, id };
+    if (fileRef.current) {
+      fileRef.current.accept = extensions.map((e) => `.${e}`).join(",");
+      fileRef.current.click();
+    }
+    setMenuOpen(false);
+  };
+
+  // Run the importer selected from the Import menu.
   const importFile = async (f: File) => {
-    const ext = f.name.split(".").pop()?.toLowerCase() || "";
-    const imp = allImporters(ctx.decls).find((i) => i.extensions.includes(ext));
-    if (!imp) { alert(tr("board.noImporter", { ext })); return; }
+    const pending = pendingImport.current;
+    pendingImport.current = null;
+    const imp = pending ? findImporter(ctx.decls, pending.name, pending.id) : undefined;
+    if (!imp) { alert(tr("board.noImporter")); return; }
     try {
-      const els = imp.run(await f.text());
+      const result = imp.run(await f.text());
+      const els = result.elements;
       if (!els.length) { alert(tr("board.noShapes")); return; }
       snapshot();
       // offset imported diagram near current viewport center
@@ -879,9 +1061,47 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
         sceneRef.current.upsert(el);
         broadcastOp({ kind: "upsert", el });
       }
+      // Apply imported canvas settings (background, grid, etc.).
+      if (result.appState) {
+        if (result.appState.background) {
+          const match = ctx.themes.find((t) => t.canvas.background === result.appState!.background);
+          if (match) {
+            setThemeId(match.id);
+            localStorage.setItem("drawboard.theme", match.id);
+            applyTheme(match);
+          }
+        }
+        if (typeof result.appState.grid === "boolean") setShowGrid(result.appState.grid);
+      }
       scheduleSave(); rerender();
     } catch (ex: any) {
       alert(tr("board.importFailed", { msg: ex.message }));
+    }
+  };
+
+  const download = (data: string | Blob, filename: string, mime: string) => {
+    const blob = typeof data === "string" ? new Blob([data], { type: mime }) : data;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportTo = (name: string, id: string) => {
+    try {
+      const appState: AppState = { background: themeRef.current.background, grid: showGrid };
+      const data = runExporter(ctx.decls, name, id, sceneRef.current.all(), appState);
+      if (data === undefined) { alert(tr("board.exportFailed", { msg: "not found" })); return; }
+      const decl = ctx.decls.find((d) => d.name === name);
+      const exDecl = decl?.exports?.find((e) => e.id === id);
+      const ext = exDecl?.extension || "txt";
+      const filename = `${meta?.name || "untitled"}.${ext}`;
+      download(data, filename, exDecl?.mimeType || "application/octet-stream");
+    } catch (ex: any) {
+      alert(tr("board.exportFailed", { msg: ex.message }));
     }
   };
 
@@ -901,6 +1121,37 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
     }
     return [...g.entries()];
   }, [pluginToolDefs]);
+
+  const q = libSearch.trim().toLowerCase();
+  const filteredGroups = useMemo(() => {
+    if (!q) return groups;
+    return groups
+      .map(([cat, draws]) => {
+        const matchesCat = cat.toLowerCase().includes(q);
+        const matched = draws.filter((d) =>
+          matchesCat ||
+          d.id.toLowerCase().includes(q) ||
+          d.label.toLowerCase().includes(q) ||
+          (d.keywords || "").toLowerCase().includes(q),
+        );
+        return [cat, matched] as [string, ToolDef[]];
+      })
+      .filter(([, draws]) => draws.length > 0);
+  }, [groups, q]);
+
+  // Auto-expand categories that contain search matches.
+  useEffect(() => {
+    if (!q) {
+      setOpenCats(new Set());
+      return;
+    }
+    const matched = new Set(filteredGroups.map(([cat]) => cat));
+    setOpenCats((prev) => {
+      const next = new Set(prev);
+      matched.forEach((c) => next.add(c));
+      return next;
+    });
+  }, [q, filteredGroups]);
 
   // Which properties the right panel shows: the selection's if any element is
   // selected, otherwise the active tool's (builtin or plugin draw).
@@ -927,9 +1178,12 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
       stroke: el.stroke, fill: el.fill, strokeWidth: el.strokeWidth,
       opacity: el.opacity, strokeType: el.strokeType ?? (el.dashed ? "dashed" : "solid"),
       fontSize: el.fontSize ?? 16,
+      textAlign: el.textAlign ?? (el.type === "text" ? "left" : "center"),
+      link: el.link,
       lineType: el.lineType ?? (el.curve ? "curve" : "sharp"),
       headStart: el.headStart ?? "none", headEnd: el.headEnd ?? "arrow",
       edges: el.edges ?? "sharp",
+      fillPattern: el.fillPattern ?? "solid",
     };
   }, [selection, style, tick]);
 
@@ -949,40 +1203,11 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
 
   const isTouch = useMemo(() => matchMedia("(pointer: coarse)").matches, []);
   const zoom = vpRef.current.zoom; // refreshed via tick
+  const canUndo = useMemo(() => undoStack.current.length > 0, [tick]);
+  const canRedo = useMemo(() => redoStack.current.length > 0, [tick]);
 
   return (
     <div className="board-page">
-      <header className="topbar">
-        <button onClick={() => (location.hash = "#/boards")} title={tr("board.back")}>←</button>
-        <input
-          className="board-title"
-          value={meta?.name ?? ""}
-          onChange={(e) => setMeta((m) => m && { ...m, name: e.target.value })}
-          placeholder={tr("board.untitled")}
-        />
-        <span className={`dot ${online ? "on" : "off"}`} title={online ? tr("board.connected") : tr("board.offline")} />
-        {peers.map((p) => (
-          <span key={p.id} className="peer" style={{ background: colorFor(p.id) }} title={p.name}>
-            {p.name.slice(0, 2).toUpperCase()}
-          </span>
-        ))}
-        <div className="spacer" />
-        <span className="dim small">{Math.round(zoom * 100)}%</span>
-        <button onClick={() => { vpRef.current.zoom = Math.max(0.1, vpRef.current.zoom / 1.5); rerender(); }}>−</button>
-        <button onClick={() => { vpRef.current.zoom = Math.min(6, vpRef.current.zoom * 1.5); rerender(); }}>＋</button>
-        <button onClick={() => {
-          const b = sceneRef.current.sceneBounds();
-          const r = wrapRef.current!.getBoundingClientRect();
-          vpRef.current.zoom = Math.min(2, Math.min(r.width / (b.x1 - b.x0 + 200), r.height / (b.y1 - b.y0 + 200)));
-          vpRef.current.x = (b.x0 + b.x1) / 2 - r.width / vpRef.current.zoom / 2;
-          vpRef.current.y = (b.y0 + b.y1) / 2 - r.height / vpRef.current.zoom / 2;
-          rerender();
-        }} title={tr("board.zoomFit")}>⛶</button>
-        <button className={showReactions ? "active" : ""} onClick={() => setShowReactions((v) => !v)} title={tr("board.reactions")}>😀</button>
-        <button className={showMinimap ? "active" : ""} onClick={() => setShowMinimap((v) => !v)} title={tr("board.minimap")}>🗺️</button>
-        <ThemePicker ctx={ctx} />
-        <button className="primary" onClick={() => setShowShare(true)}>{tr("board.share")}</button>
-      </header>
 
       {showReactions && (
         <div className="reaction-bar">
@@ -1000,9 +1225,117 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
       )}
 
       <div className="editor" ref={wrapRef}>
+        <div className="nav-float">
+          <input type="file" ref={fileRef} style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) importFile(f); e.currentTarget.value = ""; }} />
+          <button className={`menu-btn ${menuOpen ? "open" : ""}`} onClick={() => setMenuOpen((v) => !v)} title="Menu" aria-label="Menu">
+            <span className="hamburger"><span></span><span></span><span></span></span>
+          </button>
+          {menuOpen && (
+            <div className="menu-dropdown">
+              <div className="menu-header">
+                <span className={`dot ${online ? "on" : "off"}`} title={online ? tr("board.connected") : tr("board.offline")} />
+                <input
+                  className="board-title"
+                  value={meta?.name ?? ""}
+                  onChange={(e) => setMeta((m) => m && { ...m, name: e.target.value })}
+                  placeholder={tr("board.untitled")}
+                />
+              </div>
+              <div className="menu-sep" />
+              <button className="menu-item" onClick={() => { setMenuOpen(false); location.hash = "#/boards"; }}>
+                <span className="menu-item-inner"><MenuIcon d="M19 12H5M12 19l-7-7 7-7" />{tr("board.back")}</span>
+              </button>
+              <div className="menu-sep" />
+              <div className="menu-section"><span className="dim small">{tr("board.import")}</span></div>
+              {ctx.decls.flatMap((d) => (d.imports || []).map((i) => (
+                <button key={`${d.name}:${i.id}`} className="menu-item" onClick={() => startImport(d.name, i.id, i.extensions)}>
+                  <span className="menu-item-inner" style={{ paddingLeft: 12 }}>{i.label}</span>
+                </button>
+              )))}
+              {ctx.decls.flatMap((d) => d.imports || []).length === 0 && (
+                <span className="dim small" style={{ padding: "6px 12px", display: "block" }}>No importers installed</span>
+              )}
+              <div className="menu-section"><span className="dim small">{tr("board.export")}</span></div>
+              {ctx.decls.flatMap((d) => (d.exports || []).map((e) => (
+                <button key={`${d.name}:${e.id}`} className="menu-item" onClick={() => { setMenuOpen(false); exportTo(d.name, e.id); }}>
+                  <span className="menu-item-inner" style={{ paddingLeft: 12 }}>{e.label}</span>
+                </button>
+              )))}
+              {ctx.decls.flatMap((d) => d.exports || []).length === 0 && (
+                <span className="dim small" style={{ padding: "6px 12px", display: "block" }}>No exporters installed</span>
+              )}
+              {commands.length > 0 && (
+                <>
+                  <div className="menu-sep" />
+                  {commands.map((c) => (
+                    <button key={c.id} className="menu-item" onClick={() => {
+                      setMenuOpen(false);
+                      runAction(ctx.decls, c.action, {
+                        elements: () => sceneRef.current.all(),
+                        replaceAll: (els: El[]) => {
+                          snapshot();
+                          sceneRef.current.replaceAll(els);
+                          broadcastScene(); scheduleSave(); rerender();
+                        },
+                        alert: (msg: string) => alert(msg),
+                      });
+                    }}>
+                      {c.label}
+                    </button>
+                  ))}
+                </>
+              )}
+              <div className="menu-sep" />
+              <button className={`menu-item ${showReactions ? "active" : ""}`} onClick={() => setShowReactions((v) => !v)}>
+                <span className="menu-item-inner"><MenuIcon d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10zM8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01" />{tr("board.reactions")}</span>
+                {showReactions && <MenuIcon d="M20 6L9 17l-5-5" className="menu-check" />}
+              </button>
+              <button className={`menu-item ${showGrid ? "active" : ""}`} onClick={() => setShowGrid((v) => !v)}>
+                <span className="menu-item-inner"><MenuIcon d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z" />{tr("board.grid")}</span>
+                {showGrid && <MenuIcon d="M20 6L9 17l-5-5" className="menu-check" />}
+              </button>
+              <div className="menu-sep" />
+              <label className="menu-row">
+                <span className="dim small"><MenuIcon d="M12 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8zM12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />{tr("misc.theme")}</span>
+                <ThemePicker ctx={ctx} />
+              </label>
+              <label className="menu-row">
+                <span className="dim small"><MenuIcon d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10zM2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />{tr("misc.language")}</span>
+                <LocaleSwitcher />
+              </label>
+              <div className="menu-sep" />
+              <button className="menu-item primary" onClick={() => { setMenuOpen(false); setShowShare(true); }}>
+                <MenuIcon d="M18 8a3 3 0 1 0-3-3 3 3 0 0 0 3 3zM6 15a3 3 0 1 0-3-3 3 3 0 0 0 3 3zM18 21a3 3 0 1 0-3 3 3 3 0 0 0 3-3zM8.59 13.51l6.83-3.98M15.41 10.49l-6.82-3.98" />{tr("board.share")}
+              </button>
+            </div>
+          )}
+        </div>
+        {(peers.length > 0 || groups.length > 0) && (
+          <div className="peers-float">
+            {peers.map((p) => (
+              <span key={p.id} className="peer" style={{ background: colorFor(p.id) }} title={p.name}>
+                {p.name.slice(0, 2).toUpperCase()}
+              </span>
+            ))}
+            {groups.length > 0 && (
+              <button
+                className={`lib-panel-toggle ${showLibPanel ? "active" : ""}`}
+                onClick={() => setShowLibPanel((v) => !v)}
+                title={showLibPanel ? "Hide library" : "Show library"}
+                aria-label={showLibPanel ? "Hide library" : "Show library"}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="9" height="9" rx="1.5" />
+                  <circle cx="17" cy="16" r="4" />
+                </svg>
+              </button>
+            )}
+          </div>
+        )}
+
         <canvas
           ref={canvasRef}
-          className={`board-canvas tool-${tool}`}
+          className={`board-canvas tool-${tool} ${panning ? "panning" : ""}`}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
@@ -1012,9 +1345,35 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
             if (showReactions && (e.metaKey || e.altKey)) {
               const rect = wrapRef.current!.getBoundingClientRect();
               fireReaction(reactions[0]?.emoji || "👍", e.clientX - rect.left, e.clientY - rect.top);
+              return;
+            }
+            if ((e.ctrlKey || e.metaKey) && tool === "select" && !pluginTool) {
+              const { x: wx, y: wy } = toWorld(e);
+              const hit = sceneRef.current.hitTest(wx, wy, 10 / vpRef.current.zoom);
+              if (hit?.link) {
+                e.preventDefault();
+                window.open(hit.link, "_blank", "noopener,noreferrer");
+              }
             }
           }}
         />
+
+        {linkBubble && (
+          <a
+            className="link-bubble"
+            href={linkBubble.url}
+            target="_blank"
+            rel="noreferrer"
+            title={linkBubble.url}
+            style={{ left: linkBubble.x, top: linkBubble.y }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <span className="link-bubble-icon">↗</span>
+            <span className="link-bubble-url">{linkBubble.url}</span>
+          </a>
+        )}
 
         <div className="toolbar">
           {BUILTIN_TOOLS.map((t) => (
@@ -1026,32 +1385,89 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
             </button>
           ))}
           <div className="tb-sep" />
-          <button onClick={undo} title={tr("board.undo")}>↶</button>
-          <button onClick={redo} title={tr("board.redo")}>↷</button>
+          <button onClick={undo} title={tr("board.undo")} disabled={!canUndo}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 14 4 9 9 4" />
+              <path d="M4 9h10a6 6 0 0 1 6 6v0a6 6 0 0 1-6 6h-3" />
+            </svg>
+          </button>
+          <button onClick={redo} title={tr("board.redo")} disabled={!canRedo}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M15 14 20 9 15 4" />
+              <path d="M20 9h-10a6 6 0 0 0 -6 6v0a6 6 0 0 0 6 6h3" />
+            </svg>
+          </button>
           {isTouch && (
             <button className={showStyleBar ? "active" : ""} onClick={() => setShowStyleBar((v) => !v)} title={tr("board.styles")}>🎨</button>
           )}
         </div>
 
         {groups.length > 0 && (
-          <div className="lib-panel">
-            {groups.map(([cat, draws]) => (
-              <div key={cat}>
-                <div className="lib-cat">{cat}</div>
-                <div className="lib-grid">
-                  {draws.map((d) => (
-                    <button key={d.id} title={d.label}
-                      className={pluginTool?.id === d.id ? "active" : ""}
-                      onClick={() => setPluginTool(
-                        pluginTool?.id === d.id ? null : pluginDraws.find((p) => p.id === d.id)!,
-                      )}>
-                      {d.icon}
-                    </button>
-                  ))}
-                </div>
+          <div className={`lib-panel-wrap ${showLibPanel ? "open" : "collapsed"}`}>
+            <div className="lib-panel">
+              <Tooltip id="lib-tooltip" place="left" />
+              <div className="lib-search">
+                <SearchIcon size={14} />
+                <input
+                  type="text"
+                  value={libSearch}
+                  onChange={(e) => setLibSearch(e.target.value)}
+                  placeholder={tr("lib.search")}
+                />
+                {q && (
+                  <button className="lib-search-clear" onClick={() => setLibSearch("")} data-tooltip-id="lib-tooltip" data-tooltip-content={tr("boards.cancel")}>
+                    ✕
+                  </button>
+                )}
               </div>
-            ))}
+              {filteredGroups.length === 0 && (
+                <div className="dim small" style={{ marginTop: 8 }}>{tr("lib.noResults", { q: libSearch.trim() })}</div>
+              )}
+              {filteredGroups.map(([cat, draws]) => {
+                const open = openCats.has(cat);
+                return (
+                  <div key={cat} className={`lib-section ${open ? "open" : ""}`}>
+                    <button
+                      className="lib-accordion-head"
+                      data-tooltip-id="lib-tooltip"
+                      data-tooltip-content={cat}
+                      onClick={() => setOpenCats((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(cat)) next.delete(cat);
+                        else next.add(cat);
+                        return next;
+                      })}
+                    >
+                      <span>{cat}</span>
+                      <ChevronDownIcon size={14} className="lib-chevron" />
+                    </button>
+                    <div className="lib-grid">
+                      {draws.map((d) => (
+                        <button
+                          key={d.id}
+                          data-tooltip-id="lib-tooltip"
+                          data-tooltip-content={d.tooltip || d.label}
+                          className={pluginTool?.id === d.id ? "active" : ""}
+                          onClick={() => setPluginTool(
+                            pluginTool?.id === d.id ? null : pluginDraws.find((p) => p.id === d.id)!,
+                          )}
+                        >
+                          {d.icon}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+              <button className="lib-add-extensions" onClick={() => setShowShapePlugins(true)} data-tooltip-id="lib-tooltip" data-tooltip-content={tr("lib.addExtensions")}>
+                {tr("lib.addExtensions")}
+              </button>
+            </div>
           </div>
+        )}
+
+        {showShapePlugins && (
+          <PluginsPanel ctx={ctx} forShapes onClose={() => setShowShapePlugins(false)} />
         )}
 
         {showStyleBar && activeSpecs.length > 0 && (
@@ -1070,21 +1486,23 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
         {textEdit && (
           <textarea
             autoFocus
-            rows={1}
+            rows={Math.max(1, (textEdit.value.match(/\n/g) || []).length + 1)}
             onFocus={(e) => { const len = e.currentTarget.value.length; e.currentTarget.setSelectionRange(len, len); }}
             className="text-editor"
             style={{
               left: (textEdit.x - vpRef.current.x) * vpRef.current.zoom,
               top: (textEdit.y - vpRef.current.y) * vpRef.current.zoom,
-              fontSize: (textEdit.center ? 16 : 20) * vpRef.current.zoom,
-              ...(textEdit.center ? { transform: "translate(-50%, -50%)", textAlign: "center" as const } : {}),
+              fontSize: (textEdit.align === "center" || textEdit.multiline ? 16 : 20) * vpRef.current.zoom,
+              transform: textEdit.align === "left" ? "translate(0, -50%)" : textEdit.align === "right" ? "translate(-100%, -50%)" : "translate(-50%, -50%)",
+              textAlign: textEdit.align ?? "center",
+              ...(textEdit.width !== undefined ? { width: textEdit.width * vpRef.current.zoom, boxSizing: "border-box" } : {}),
             }}
             value={textEdit.value}
             onChange={(e) => setTextEdit({ ...textEdit, value: e.target.value })}
             onBlur={commitText}
             onKeyDown={(e) => {
-              if (e.key === "Escape") setTextEdit(null);
-              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); commitText(); }
+              if (e.key === "Escape") { setTextEdit(null); return; }
+              if (e.key === "Enter" && !textEdit.multiline && !e.shiftKey) { e.preventDefault(); commitText(); return; }
               e.stopPropagation();
             }}
           />
@@ -1096,15 +1514,37 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
           <div className="hint">{tr("board.placeHint", { label: pluginTool.label })}</div>
         )}
 
-        {showMinimap && (
-          <Minimap scene={sceneRef.current} vp={vpRef.current} theme={theme}
-            cssW={size.w} cssH={size.h}
-            onJump={(wx, wy) => {
-              vpRef.current.x = wx - size.w / vpRef.current.zoom / 2;
-              vpRef.current.y = wy - size.h / vpRef.current.zoom / 2;
+        <div className="bottom-float">
+          <div className="zoom-controls">
+            <span className="dim small">{Math.round(zoom * 100)}%</span>
+            <button onClick={() => { vpRef.current.zoom = Math.max(0.1, vpRef.current.zoom / 1.5); rerender(); }}>−</button>
+            <button onClick={() => { vpRef.current.zoom = Math.min(6, vpRef.current.zoom * 1.5); rerender(); }}>＋</button>
+            <button onClick={() => {
+              const b = sceneRef.current.sceneBounds();
+              const r = wrapRef.current!.getBoundingClientRect();
+              vpRef.current.zoom = Math.min(2, Math.min(r.width / (b.x1 - b.x0 + 200), r.height / (b.y1 - b.y0 + 200)));
+              vpRef.current.x = (b.x0 + b.x1) / 2 - r.width / vpRef.current.zoom / 2;
+              vpRef.current.y = (b.y0 + b.y1) / 2 - r.height / vpRef.current.zoom / 2;
               rerender();
-            }} />
-        )}
+            }} title={tr("board.zoomFit")}>⛶</button>
+          </div>
+          <div className={`minimap-wrap ${showMinimap ? "open" : "collapsed"}`}>
+            <Minimap scene={sceneRef.current} vp={vpRef.current} theme={theme}
+              cssW={size.w} cssH={size.h}
+              onJump={(wx, wy) => {
+                vpRef.current.x = wx - size.w / vpRef.current.zoom / 2;
+                vpRef.current.y = wy - size.h / vpRef.current.zoom / 2;
+                rerender();
+              }} />
+            <button
+              className="minimap-toggle"
+              onClick={() => setShowMinimap((v) => !v)}
+              title={tr("board.minimap")}
+            >
+              {showMinimap ? "−" : "🗺️"}
+            </button>
+          </div>
+        </div>
 
         <ReactionLayer floats={floats} />
       </div>

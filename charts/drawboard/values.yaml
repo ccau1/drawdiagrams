@@ -1,13 +1,17 @@
 # Drawboard Helm values. Override the images/tags to publish your own builds:
 #   helm install drawboard ./charts/drawboard \
-#     --set server.image.repository=ghcr.io/you/drawboard-server \
+#     --set server.image.registry=ghcr.io \
+#     --set server.image.repository=you/drawboard-server \
 #     --set server.image.tag=v1.2.0 \
-#     --set web.image.repository=ghcr.io/you/drawboard-web \
+#     --set web.image.registry=ghcr.io \
+#     --set web.image.repository=you/drawboard-web \
 #     --set web.image.tag=v1.2.0
 
 server:
   replicaCount: 1
   image:
+    # Empty registry means no registry prefix (e.g. docker.io/library).
+    registry: ""
     repository: drawboard/server
     tag: latest
     pullPolicy: IfNotPresent
@@ -16,13 +20,52 @@ server:
     port: 8080
   env: {}            # extra env vars for the server container
   resources: {}
+  # Attach extra volumes / mounts to the server pod. Useful for mounting
+  # secrets from AWS Secrets Store CSI driver without storing them in etcd.
+  extraVolumes: []
+  extraVolumeMounts: []
+  # Local login bootstrap user. If both username and password are set, the
+  # server will create the account on startup when it does not yet exist.
+  auth:
+    initialUsername: ""
+    initialPassword: ""
+    # Optional; defaults to the username if it contains '@', otherwise
+    # "<username>@local".
+    initialEmail: ""
   # JWT signing secret; if empty, jwt.existingSecret is used or a random one
   # is generated per pod start (not recommended for >1 replica).
   jwtSecret: ""
+  oauth:
+    enabled: false
+    localEnabled: true
+    redirectUrl: ""
+    providers: {}
+    # google:
+    #   enabled: false
+    #   clientId: ""
+    #   clientSecret: ""
+    #   redirectUrl: ""
+    # github:
+    #   enabled: false
+    #   clientId: ""
+    #   clientSecret: ""
+    #   redirectUrl: ""
+    # facebook:
+    #   enabled: false
+    #   clientId: ""
+    #   clientSecret: ""
+    #   redirectUrl: ""
+    # okta:
+    #   enabled: false
+    #   clientId: ""
+    #   clientSecret: ""
+    #   redirectUrl: ""
+    #   issuer: ""
 
 web:
   replicaCount: 1
   image:
+    registry: ""
     repository: drawboard/web
     tag: latest
     pullPolicy: IfNotPresent

@@ -14,22 +14,39 @@ const MARKETPLACE = [
     title: "GCP Icons",
     description: "Google Cloud architecture icons (Compute, GKE, BigQuery…)",
     version: "1.0.0",
+    hasDraws: true,
   },
   {
     name: "flowchart-pack",
     title: "Flowchart Pack",
     description: "Extra flowchart shapes: terminator, decision, document, data",
     version: "1.0.0",
+    hasDraws: true,
+  },
+  {
+    name: "devops-icons",
+    title: "DevOps Icons",
+    description: "Monitoring & alerting icons: Prometheus, Grafana, Cloudflare, PagerDuty, OneUptime, Regen…",
+    version: "1.0.0",
+    hasDraws: true,
+  },
+  {
+    name: "messenger-icons",
+    title: "Messenger Icons",
+    description: "Chat & communication icons: Slack, Teams, WhatsApp, Telegram, CC…",
+    version: "1.0.0",
+    hasDraws: true,
   },
   {
     name: "retro-theme",
     title: "Retro Theme Pack",
     description: "Neon-retro UI + canvas theme with glow palette",
     version: "1.0.0",
+    hasDraws: false,
   },
 ];
 
-export default function PluginsPanel({ ctx, onClose }: { ctx: AppCtx; onClose: () => void }) {
+export default function PluginsPanel({ ctx, onClose, forShapes }: { ctx: AppCtx; onClose: () => void; forShapes?: boolean }) {
   const t = useT();
   const fileRef = useRef<HTMLInputElement>(null);
   const [msg, setMsg] = useState("");
@@ -60,19 +77,24 @@ export default function PluginsPanel({ ctx, onClose }: { ctx: AppCtx; onClose: (
   };
 
   const installed = ctx.decls.map((d) => d.name);
+  const visibleDecls = forShapes ? ctx.decls.filter((d) => (d.draws?.length || 0) > 0) : ctx.decls;
+  const visibleMarket = forShapes ? MARKETPLACE.filter((m) => m.hasDraws) : MARKETPLACE;
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h3>{t("plugins.title")}</h3>
+          <h3>{t(forShapes ? "plugins.shapeTitle" : "plugins.title")}</h3>
           <button onClick={onClose}>✕</button>
         </div>
         {msg && <div className="notice">{msg}</div>}
 
         <h4>{t("plugins.installed")}</h4>
         <div className="plugin-list">
-          {ctx.decls.map((d) => (
+          {forShapes && visibleDecls.length === 0 && (
+            <div className="dim small">{t("plugins.noShapesInstalled")}</div>
+          )}
+          {visibleDecls.map((d) => (
             <div key={d.name} className="plugin-row">
               <div>
                 <b>{d.name}</b> <span className="dim">v{d.version} by {d.author}</span>
@@ -80,7 +102,9 @@ export default function PluginsPanel({ ctx, onClose }: { ctx: AppCtx; onClose: (
                 <div className="dim small">
                   {(d.draws?.length || 0) > 0 && `${d.draws!.length} ${t("plugins.draws")} · `}
                   {(d.reactions?.length || 0) > 0 && `${d.reactions!.length} ${t("plugins.reactions")} · `}
-                  {(d.themes?.length || 0) > 0 && `${d.themes!.length} ${t("plugins.themes")}`}
+                  {(d.themes?.length || 0) > 0 && `${d.themes!.length} ${t("plugins.themes")} · `}
+                  {(d.imports?.length || 0) > 0 && `${d.imports!.length} ${t("plugins.imports")} · `}
+                  {(d.exports?.length || 0) > 0 && `${d.exports!.length} ${t("plugins.exports")}`}
                   {d.builtin && ` · ${t("plugins.builtin")}`}
                 </div>
               </div>
@@ -107,7 +131,10 @@ export default function PluginsPanel({ ctx, onClose }: { ctx: AppCtx; onClose: (
 
         <h4>{t("plugins.marketplace")}</h4>
         <div className="plugin-list">
-          {MARKETPLACE.map((m) => (
+          {visibleMarket.length === 0 && (
+            <div className="dim small">{t("plugins.noShapesAvailable")}</div>
+          )}
+          {visibleMarket.map((m) => (
             <div key={m.name} className="plugin-row">
               <div>
                 <b>{m.title}</b> <span className="dim">v{m.version}</span>

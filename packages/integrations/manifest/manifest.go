@@ -17,10 +17,14 @@ type Declaration struct {
 	Reactions   []ReactionDecl `json:"reactions,omitempty"`
 	Themes      []ThemeDecl    `json:"themes,omitempty"`
 	Commands    []CommandDecl  `json:"commands,omitempty"`
+	Imports     []ImportDecl   `json:"imports,omitempty"`
+	Exports     []ExportDecl   `json:"exports,omitempty"`
 }
 
 // DrawDecl is a drawable item contributed by an integration: either an icon
 // (SVG) or a parametric shape rendered by the canvas engine.
+// Keywords is an optional space-separated list of hidden search terms (≤120 chars)
+// that helps users find the shape when searching the library.
 type DrawDecl struct {
 	ID       string  `json:"id"`
 	Label    string  `json:"label"`
@@ -30,6 +34,8 @@ type DrawDecl struct {
 	Shape    string  `json:"shape,omitempty"` // e.g. "uml-class", "uml-actor" (frontend renderer)
 	Width    float64 `json:"width,omitempty"`
 	Height   float64 `json:"height,omitempty"`
+	Keywords string  `json:"keywords,omitempty"`
+	Tooltip  string  `json:"tooltip,omitempty"`
 }
 
 // ReactionDecl is an emoji reaction shown in the reaction bar and broadcast
@@ -66,4 +72,20 @@ type CommandDecl struct {
 	Label   string `json:"label"`
 	Shortcut string `json:"shortcut,omitempty"`
 	Action  string `json:"action"` // frontend action identifier, e.g. "canvas.clear"
+}
+
+// ImportDecl declares a file format this integration can import.
+type ImportDecl struct {
+	ID         string   `json:"id"`
+	Label      string   `json:"label"`
+	Extensions []string `json:"extensions"`
+	Multiple   bool     `json:"multiple,omitempty"` // allow choosing among several importers for the same extension
+}
+
+// ExportDecl declares a file format this integration can export to.
+type ExportDecl struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Extension string `json:"extension"`
+	MimeType  string `json:"mimeType"`
 }

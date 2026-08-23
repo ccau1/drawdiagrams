@@ -1,7 +1,7 @@
 // Right-hand properties panel. Renders whatever the active tool (or the
 // selected element) declares in its PropSpec[] — built-in rows by name, or
 // custom renderers supplied by integrations.
-import type { CanvasTheme, EdgeKind, HeadType, LineKind, StrokeType } from "../types";
+import type { CanvasTheme, EdgeKind, FillPattern, HeadType, LineKind, StrokeType } from "../types";
 import type { BuiltinProp, LayerOp, PropRenderCtx, PropSpec, Style } from "../tools";
 
 const WIDTHS = [1, 2, 4, 8];
@@ -14,6 +14,24 @@ const HEAD_OPTS: HeadType[] = ["none", "arrow", "triangle", "dot"];
 const STROKE_TYPE_OPTS: StrokeType[] = ["solid", "dashed", "dotted"];
 const LINE_TYPE_OPTS: LineKind[] = ["sharp", "curve", "elbow"];
 const EDGE_OPTS: EdgeKind[] = ["sharp", "round"];
+const FILL_PATTERN_OPTS: FillPattern[] = ["solid", "hatch", "crosshatch"];
+const TEXT_ALIGN_OPTS: ("left" | "center" | "right")[] = ["left", "center", "right"];
+
+function textAlignIcon(a: "left" | "center" | "right") {
+  return (
+    <svg width="24" height="12" viewBox="0 0 24 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+      {a === "left" && (
+        <><line x1="2" y1="2" x2="14" y2="2" /><line x1="2" y1="6" x2="18" y2="6" /><line x1="2" y1="10" x2="12" y2="10" /></>
+      )}
+      {a === "center" && (
+        <><line x1="5" y1="2" x2="19" y2="2" /><line x1="3" y1="6" x2="21" y2="6" /><line x1="6" y1="10" x2="18" y2="10" /></>
+      )}
+      {a === "right" && (
+        <><line x1="10" y1="2" x2="22" y2="2" /><line x1="6" y1="6" x2="22" y2="6" /><line x1="12" y1="10" x2="22" y2="10" /></>
+      )}
+    </svg>
+  );
+}
 
 /** Corner icon for the edges property: solid top-left corner, dotted rest. */
 function edgeIcon(k: EdgeKind) {
@@ -62,6 +80,30 @@ function headIcon(type: HeadType, atStart: boolean) {
   );
 }
 
+/** Icon for a fill pattern: solid shows the current fill color, hatch/crosshatch are line patterns. */
+function fillPatternIcon(p: FillPattern, style: Style) {
+  if (p === "hatch") {
+    return (
+      <svg width="20" height="14" viewBox="0 0 20 14" stroke="currentColor" strokeWidth="1.5" fill="none">
+        <path d="M0 14 L14 0 M4 14 L18 0" />
+      </svg>
+    );
+  }
+  if (p === "crosshatch") {
+    return (
+      <svg width="20" height="14" viewBox="0 0 20 14" stroke="currentColor" strokeWidth="1.5" fill="none">
+        <path d="M0 14 L14 0 M4 14 L18 0 M0 0 L14 14 M4 0 L18 14" />
+      </svg>
+    );
+  }
+  const fill = style.fill === "transparent" ? "#fff" : style.fill;
+  return (
+    <svg width="20" height="14" viewBox="0 0 20 14">
+      <rect x="1" y="1" width="18" height="12" rx="2" fill={fill} stroke="currentColor" />
+    </svg>
+  );
+}
+
 interface Props {
   specs: PropSpec[];
   style: Style;
@@ -80,27 +122,44 @@ export default function PropsPanel({ specs, style, theme, hasSelection, layerInf
     switch (spec) {
       case "stroke":
         return (
-          <div className="swatches">
-            {theme.palette.map((c) => (
-              <button key={c} className={`swatch ${style.stroke === c ? "active" : ""}`}
-                style={{ background: c }} title={tr("style.stroke", { c })}
-                onClick={() => onStyle({ stroke: c })} />
-            ))}
-            <input type="color" value={style.stroke} title={tr("style.customStroke")}
-              onChange={(e) => onStyle({ stroke: e.target.value })} />
-          </div>
+          <label className="dim small">{tr("style.strokeColor")}
+            <div className="swatches">
+              {theme.palette.map((c) => (
+                <button key={c} className={`swatch ${style.stroke === c ? "active" : ""}`}
+                  style={{ background: c }} title={tr("style.stroke", { c })}
+                  onClick={() => onStyle({ stroke: c })} />
+              ))}
+              <input type="color" value={style.stroke} title={tr("style.customStroke")}
+                onChange={(e) => onStyle({ stroke: e.target.value })} />
+            </div>
+          </label>
         );
       case "fill":
         return (
-          <div className="swatches">
-            <button className={`swatch fill-none ${style.fill === "transparent" ? "active" : ""}`}
-              title={tr("style.noFill")} onClick={() => onStyle({ fill: "transparent" })}>∅</button>
-            {theme.palette.slice(1).map((c) => (
-              <button key={c} className={`swatch ${style.fill === c ? "active" : ""}`}
-                style={{ background: c }} title={tr("style.fill", { c })}
-                onClick={() => onStyle({ fill: c })} />
-            ))}
-          </div>
+          <label className="dim small">{tr("style.fillColor")}
+            <div className="swatches">
+              <button className={`swatch fill-none ${style.fill === "transparent" ? "active" : ""}`}
+                title={tr("style.noFill")} onClick={() => onStyle({ fill: "transparent" })}>∅</button>
+              {theme.palette.slice(1).map((c) => (
+                <button key={c} className={`swatch ${style.fill === c ? "active" : ""}`}
+                  style={{ background: c }} title={tr("style.fill", { c })}
+                  onClick={() => onStyle({ fill: c })} />
+              ))}
+            </div>
+          </label>
+        );
+      case "fillPattern":
+        return (
+          <label className="dim small">{tr("style.fillPattern")}
+            <div className="opt-row">
+              {FILL_PATTERN_OPTS.map((p) => (
+                <button key={p} className={style.fillPattern === p ? "active" : ""}
+                  title={tr(`fillPattern.${p}`)} onClick={() => onStyle({ fillPattern: p })}>
+                  {fillPatternIcon(p, style)}
+                </button>
+              ))}
+            </div>
+          </label>
         );
       case "strokeWidth":
         return (
@@ -186,6 +245,33 @@ export default function PropsPanel({ specs, style, theme, hasSelection, layerInf
                 <button key={s} className={style.fontSize === s ? "active" : ""}
                   title={`${s}px`} onClick={() => onStyle({ fontSize: s })}>{label}</button>
               ))}
+            </div>
+          </label>
+        );
+      case "textAlign":
+        return (
+          <label className="dim small">{tr("style.textAlign")}
+            <div className="opt-row">
+              {TEXT_ALIGN_OPTS.map((a) => (
+                <button key={a} className={style.textAlign === a ? "active" : ""}
+                  title={tr(`textAlign.${a}`)} onClick={() => onStyle({ textAlign: a })}>
+                  {textAlignIcon(a)}
+                </button>
+              ))}
+            </div>
+          </label>
+        );
+      case "link":
+        return (
+          <label className="dim small">{tr("style.link")}
+            <div className="opt-row link-row">
+              <input type="text" value={style.link || ""} placeholder={tr("style.linkPlaceholder")}
+                onChange={(e) => onStyle({ link: e.target.value })}
+                onKeyDown={(e) => e.stopPropagation()} />
+              {style.link && (
+                <a className="small-btn" href={style.link} target="_blank" rel="noreferrer"
+                  title={tr("style.openLink")} onClick={(e) => e.stopPropagation()}>↗</a>
+              )}
             </div>
           </label>
         );

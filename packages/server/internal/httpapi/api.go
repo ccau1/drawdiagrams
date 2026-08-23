@@ -9,15 +9,18 @@ import (
 	"draw.local/server/internal/auth"
 	"draw.local/server/internal/collab"
 	"draw.local/server/internal/integrations"
+	"draw.local/server/internal/oauth"
 	"draw.local/server/internal/store"
 	"draw.local/server/internal/ws"
 )
 
 type API struct {
-	St  store.Datastore
-	Hub *collab.Hub
-	Reg *integrations.Registry
-	Key []byte // JWT secret
+	St                       store.Datastore
+	Hub                      *collab.Hub
+	Reg                      *integrations.Registry
+	Key                      []byte // JWT secret
+	Providers                *oauth.Manager
+	LocalRegistrationEnabled bool
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -54,6 +57,9 @@ func (a *API) user(w http.ResponseWriter, r *http.Request) *auth.Claims {
 
 func (a *API) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/auth/config", a.authConfig)
+	mux.HandleFunc("GET /api/auth/{provider}", a.oauthStart)
+	mux.HandleFunc("GET /api/auth/{provider}/callback", a.oauthCallback)
 	mux.HandleFunc("POST /api/register", a.register)
 	mux.HandleFunc("POST /api/login", a.login)
 	mux.HandleFunc("GET /api/me", a.me)
@@ -62,10 +68,16 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/orgs/{id}/members", a.addMember)
 	mux.HandleFunc("GET /api/orgs/{id}/boards", a.listBoards)
 	mux.HandleFunc("POST /api/orgs/{id}/boards", a.createBoard)
+	mux.HandleFunc("GET /api/orgs/{id}/folders", a.listFolders)
+	mux.HandleFunc("POST /api/orgs/{id}/folders", a.createFolder)
 	mux.HandleFunc("GET /api/boards/{id}", a.getBoard)
 	mux.HandleFunc("PUT /api/boards/{id}", a.saveBoard)
 	mux.HandleFunc("DELETE /api/boards/{id}", a.deleteBoard)
 	mux.HandleFunc("POST /api/boards/{id}/share", a.shareBoard)
+	mux.HandleFunc("POST /api/boards/{id}/thumbnail", a.saveThumbnail)
+	mux.HandleFunc("POST /api/boards/{id}/move", a.moveBoard)
+	mux.HandleFunc("POST /api/folders/{id}/move", a.moveFolder)
+	mux.HandleFunc("DELETE /api/folders/{id}", a.deleteFolder)
 	mux.HandleFunc("GET /api/integrations", a.listIntegrations)
 	mux.HandleFunc("POST /api/plugins/upload", a.uploadPlugin)
 	mux.HandleFunc("DELETE /api/plugins/{name}", a.deletePlugin)
@@ -76,13 +88,18 @@ func (a *API) Routes() *http.ServeMux {
 }
 
 func (a *API) register(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Email, Name, Password string }
+	var in struct{ Email, Username, Name, Password string }
 	if !readJSON(w, r, &in) {
 		return
 	}
+	if !a.LocalRegistrationEnabled {
+		writeErr(w, http.StatusForbidden, "registration disabled")
+		return
+	}
 	in.Email = strings.ToLower(strings.TrimSpace(in.Email))
-	if in.Email == "" || in.Name == "" || len(in.Password) < 6 {
-		writeErr(w, http.StatusBadRequest, "email, name and a 6+ char password are required")
+	in.Username = strings.ToLower(strings.TrimSpace(in.Username))
+	if in.Email == "" || in.Username == "" || in.Name == "" || len(in.Password) < 6 {
+		writeErr(w, http.StatusBadRequest, "email, username, name and a 6+ char password are required")
 		return
 	}
 	hash, err := auth.HashPassword(in.Password)
@@ -90,7 +107,7 @@ func (a *API) register(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "hash failed")
 		return
 	}
-	u, err := a.St.CreateUser(in.Email, in.Name, hash)
+	u, err := a.St.CreateUser(in.Email, in.Name, in.Username, hash, "")
 	if err != nil {
 		writeErr(w, http.StatusConflict, err.Error())
 		return
@@ -100,13 +117,20 @@ func (a *API) register(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) login(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Email, Password string }
+	var in struct{ UsernameOrEmail, Password string }
 	if !readJSON(w, r, &in) {
 		return
 	}
-	u, err := a.St.UserByEmail(strings.ToLower(strings.TrimSpace(in.Email)))
+	ident := strings.ToLower(strings.TrimSpace(in.UsernameOrEmail))
+	var u *store.User
+	var err error
+	if strings.Contains(ident, "@") {
+		u, err = a.St.UserByEmail(ident)
+	} else {
+		u, err = a.St.UserByUsername(ident)
+	}
 	if err != nil || !auth.CheckPassword(in.Password, u.PasswordHash) {
-		writeErr(w, http.StatusUnauthorized, "invalid email or password")
+		writeErr(w, http.StatusUnauthorized, "invalid username/email or password")
 		return
 	}
 	orgs := a.St.OrgsOfUser(u.ID)
@@ -124,6 +148,30 @@ func (a *API) respondAuth(w http.ResponseWriter, id, name, email, orgID string) 
 		"user":  map[string]string{"id": id, "name": name, "email": email},
 		"orgId": orgID,
 	})
+}
+
+func (a *API) authConfig(w http.ResponseWriter, r *http.Request) {
+	if a.Providers == nil {
+		writeJSON(w, http.StatusOK, oauth.ConfigResponse{LocalEnabled: true, Providers: []oauth.ProviderInfo{}})
+		return
+	}
+	a.Providers.HandleConfig(w, r)
+}
+
+func (a *API) oauthStart(w http.ResponseWriter, r *http.Request) {
+	if a.Providers == nil {
+		http.NotFound(w, r)
+		return
+	}
+	a.Providers.HandleAuth(w, r)
+}
+
+func (a *API) oauthCallback(w http.ResponseWriter, r *http.Request) {
+	if a.Providers == nil {
+		http.NotFound(w, r)
+		return
+	}
+	a.Providers.HandleCallback(a.St, a.Key, w, r)
 }
 
 func (a *API) me(w http.ResponseWriter, r *http.Request) {
@@ -169,7 +217,7 @@ func (a *API) addMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	orgID := r.PathValue("id")
-	if !a.St.IsMember(orgID, c.Sub) {
+	if !a.St.IsOrgMember(orgID, c.Sub) {
 		writeErr(w, http.StatusForbidden, "not an org member")
 		return
 	}
@@ -177,7 +225,13 @@ func (a *API) addMember(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &in) {
 		return
 	}
-	if err := a.St.AddMember(orgID, strings.ToLower(strings.TrimSpace(in.Email))); err != nil {
+	email := strings.ToLower(strings.TrimSpace(in.Email))
+	u, err := a.St.UserByEmail(email)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "user not found")
+		return
+	}
+	if err := a.St.AddMember(orgID, u.ID, store.OrgRoleMember); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -190,11 +244,11 @@ func (a *API) listBoards(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	orgID := r.PathValue("id")
-	if !a.St.IsMember(orgID, c.Sub) {
+	if !a.St.IsOrgMember(orgID, c.Sub) {
 		writeErr(w, http.StatusForbidden, "not an org member")
 		return
 	}
-	writeJSON(w, http.StatusOK, a.St.BoardsOfOrg(orgID))
+	writeJSON(w, http.StatusOK, a.St.BoardsOfOrg(orgID, c.Sub))
 }
 
 func (a *API) createBoard(w http.ResponseWriter, r *http.Request) {
@@ -203,16 +257,19 @@ func (a *API) createBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	orgID := r.PathValue("id")
-	if !a.St.IsMember(orgID, c.Sub) {
+	if !a.St.IsOrgMember(orgID, c.Sub) {
 		writeErr(w, http.StatusForbidden, "not an org member")
 		return
 	}
-	var in struct{ Name string }
+	var in struct{ Name, FolderId string }
 	if !readJSON(w, r, &in) || strings.TrimSpace(in.Name) == "" {
 		writeErr(w, http.StatusBadRequest, "name required")
 		return
 	}
-	writeJSON(w, http.StatusOK, a.St.CreateBoard(orgID, c.Sub, strings.TrimSpace(in.Name)))
+	if !a.folderInOrg(w, orgID, in.FolderId) {
+		return
+	}
+	writeJSON(w, http.StatusOK, a.St.CreateBoard(orgID, c.Sub, strings.TrimSpace(in.Name), in.FolderId, ""))
 }
 
 // boardAccess loads a board and checks the caller may use it.
@@ -263,6 +320,28 @@ func (a *API) saveBoard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+func (a *API) saveThumbnail(w http.ResponseWriter, r *http.Request) {
+	b, _ := a.boardAccess(w, r)
+	if b == nil {
+		return
+	}
+	var in struct {
+		Thumbnail string `json:"thumbnail"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if in.Thumbnail == "" || len(in.Thumbnail) > 600*1024 {
+		writeErr(w, http.StatusBadRequest, "thumbnail missing or too large")
+		return
+	}
+	if err := a.St.SaveBoardThumbnail(b.ID, in.Thumbnail); err != nil {
+		writeErr(w, http.StatusNotFound, "board not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (a *API) deleteBoard(w http.ResponseWriter, r *http.Request) {
 	b, uid := a.boardAccess(w, r)
 	if b == nil {
@@ -289,6 +368,125 @@ func (a *API) shareBoard(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = a.St.SetBoardShared(b.ID, in.Shared)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "shared": in.Shared})
+}
+
+// --- Folders ---
+
+// folderInOrg writes an error and returns false when folderID is set but is
+// not a folder of the org. Empty folderID (root) passes.
+func (a *API) folderInOrg(w http.ResponseWriter, orgID, folderID string) bool {
+	if folderID == "" {
+		return true
+	}
+	f, err := a.St.Folder(folderID)
+	if err != nil || f.OrgID != orgID {
+		writeErr(w, http.StatusBadRequest, "folder not in this org")
+		return false
+	}
+	return true
+}
+
+func (a *API) listFolders(w http.ResponseWriter, r *http.Request) {
+	c := a.user(w, r)
+	if c == nil {
+		return
+	}
+	orgID := r.PathValue("id")
+	if !a.St.IsOrgMember(orgID, c.Sub) {
+		writeErr(w, http.StatusForbidden, "not an org member")
+		return
+	}
+	writeJSON(w, http.StatusOK, a.St.FoldersOfOrg(orgID))
+}
+
+func (a *API) createFolder(w http.ResponseWriter, r *http.Request) {
+	c := a.user(w, r)
+	if c == nil {
+		return
+	}
+	orgID := r.PathValue("id")
+	if !a.St.IsOrgMember(orgID, c.Sub) {
+		writeErr(w, http.StatusForbidden, "not an org member")
+		return
+	}
+	var in struct{ Name, ParentId string }
+	if !readJSON(w, r, &in) || strings.TrimSpace(in.Name) == "" {
+		writeErr(w, http.StatusBadRequest, "name required")
+		return
+	}
+	if !a.folderInOrg(w, orgID, in.ParentId) {
+		return
+	}
+	writeJSON(w, http.StatusOK, a.St.CreateFolder(orgID, in.ParentId, strings.TrimSpace(in.Name)))
+}
+
+func (a *API) moveBoard(w http.ResponseWriter, r *http.Request) {
+	b, uid := a.boardAccess(w, r)
+	if b == nil {
+		return
+	}
+	if uid == "" || !a.St.IsOrgMember(b.OrgID, uid) {
+		writeErr(w, http.StatusForbidden, "not an org member")
+		return
+	}
+	var in struct{ FolderId string }
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if !a.folderInOrg(w, b.OrgID, in.FolderId) {
+		return
+	}
+	if err := a.St.MoveBoard(b.ID, in.FolderId); err != nil {
+		writeErr(w, http.StatusNotFound, "board not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// folderAccess loads a folder and checks the caller is a member of its org.
+func (a *API) folderAccess(w http.ResponseWriter, r *http.Request) (*store.Folder, string) {
+	c := a.user(w, r)
+	if c == nil {
+		return nil, ""
+	}
+	f, err := a.St.Folder(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "folder not found")
+		return nil, ""
+	}
+	if !a.St.IsOrgMember(f.OrgID, c.Sub) {
+		writeErr(w, http.StatusForbidden, "not an org member")
+		return nil, ""
+	}
+	return f, c.Sub
+}
+
+func (a *API) moveFolder(w http.ResponseWriter, r *http.Request) {
+	f, _ := a.folderAccess(w, r)
+	if f == nil {
+		return
+	}
+	var in struct{ ParentId string }
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if !a.folderInOrg(w, f.OrgID, in.ParentId) {
+		return
+	}
+	if err := a.St.MoveFolder(f.ID, in.ParentId); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *API) deleteFolder(w http.ResponseWriter, r *http.Request) {
+	f, _ := a.folderAccess(w, r)
+	if f == nil {
+		return
+	}
+	_ = a.St.DeleteFolder(f.ID) // cascades to subfolders and boards
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (a *API) listIntegrations(w http.ResponseWriter, r *http.Request) {

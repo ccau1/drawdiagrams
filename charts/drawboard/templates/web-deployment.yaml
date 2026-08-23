@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: web
-          image: "{{ .Values.web.image.repository }}:{{ .Values.web.image.tag }}"
+          image: {{ include "drawboard.image" (dict "image" .Values.web.image) | quote }}
           imagePullPolicy: {{ .Values.web.image.pullPolicy }}
           ports:
             - containerPort: 80

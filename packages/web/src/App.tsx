@@ -39,6 +39,23 @@ export default function App() {
     const saved = localStorage.getItem(THEME_KEY) || "light";
     applyTheme(BUILTIN_THEMES.find((t) => t.id === saved) || BUILTIN_THEMES[0]);
     reloadDecls();
+
+    // OAuth callback tokens arrive in the URL fragment as ?token=... on #/login.
+    const hash = location.hash;
+    const qIdx = hash.indexOf("?");
+    const params = qIdx >= 0 ? new URLSearchParams(hash.slice(qIdx + 1)) : new URLSearchParams();
+    const oauthToken = params.get("token");
+    if (oauthToken) {
+      setToken(oauthToken);
+      const clean = hash.replace(/\?.*$/, "");
+      history.replaceState(null, "", location.pathname + clean);
+      api.me()
+        .then((m) => setUser(m.user))
+        .catch(() => setToken(""))
+        .finally(() => setBooted(true));
+      return;
+    }
+
     if (getToken()) {
       api.me().then((m) => setUser(m.user)).catch(() => setToken("")).finally(() => setBooted(true));
     } else setBooted(true);

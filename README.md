@@ -111,8 +111,18 @@ cd packages/web && npm install && npm run dev      # 前端（vite 代理到 :80
   （启动自动建表，带连接重试等待数据库就绪）
 - 未设置 → JSON 文件存储（零依赖本地模式）
 
-环境变量：`ADDR`、`DATABASE_URL`、`DATA_DIR`、`WEB_DIR`（空 = 仅 API 模式）、
-`MARKETPLACE_DIR`、`JWT_SECRET`。
+环境变量：
+
+- `ADDR`、`DATABASE_URL`、`DATA_DIR`、`WEB_DIR`（空 = 仅 API 模式）、`MARKETPLACE_DIR`、`JWT_SECRET`。
+- **OAuth / SSO**：
+  - `OAUTH_LOCAL_ENABLED`（默认 `true`）— 设为 `false` 时 `/api/auth/config` 仍保留本地注册/登录路由但会声明 `localEnabled: false`。
+  - `OAUTH_REDIRECT_URL` — 全局回调地址模板，可包含 `{provider}` 占位符，例如 `https://draw.example.com/api/auth/{provider}/callback`；未设置时回退到 `http://localhost:8080/api/auth/{provider}/callback` 并打印警告。
+  - 对每个提供商 `google`、`github`、`facebook`、`okta`：
+    - `OAUTH_<PROVIDER>_ENABLED`（默认 `false`）— 只有设为 `true` 才会在 `/api/auth/config` 中列出。
+    - `OAUTH_<PROVIDER>_CLIENT_ID`
+    - `OAUTH_<PROVIDER>_CLIENT_SECRET`
+    - `OAUTH_<PROVIDER>_REDIRECT_URL`（可选；留空则使用 `OAUTH_REDIRECT_URL`）
+  - `OAUTH_OKTA_ISSUER` — Okta 启用时必填（例如 `https://your-org.okta.com`）。
 
 ## draw.io 导入
 
