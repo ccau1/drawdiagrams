@@ -115,6 +115,8 @@ export default {
   "style.link": "Link",
   "style.linkPlaceholder": "https://…",
   "style.openLink": "Open link",
+  "style.group": "Group",
+  "style.ungroup": "Ungroup",
   "style.layers": "Layers",
   "layer.top": "Bring to front",
   "layer.up": "Bring forward",

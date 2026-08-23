@@ -110,12 +110,16 @@ interface Props {
   theme: CanvasTheme;
   hasSelection: boolean;
   layerInfo?: string;   // e.g. "3 / 12" or "2–4 / 12" for multi-select
+  canGroup?: boolean;
+  canUngroup?: boolean;
   tr: PropRenderCtx["tr"];
   onStyle: (patch: Partial<Style>) => void;
   onLayer: (op: LayerOp) => void;
+  onGroup?: () => void;
+  onUngroup?: () => void;
 }
 
-export default function PropsPanel({ specs, style, theme, hasSelection, layerInfo, tr, onStyle, onLayer }: Props) {
+export default function PropsPanel({ specs, style, theme, hasSelection, layerInfo, canGroup, canUngroup, tr, onStyle, onLayer, onGroup, onUngroup }: Props) {
   const ctx: PropRenderCtx = { style, hasSelection, apply: onStyle, applyLayer: onLayer, tr };
 
   const builtin = (spec: BuiltinProp) => {
@@ -296,6 +300,12 @@ export default function PropsPanel({ specs, style, theme, hasSelection, layerInf
         typeof spec === "string"
           ? <div key={spec}>{builtin(spec)}</div>
           : <div key={spec.key}>{spec.render(ctx)}</div>)}
+      {(canGroup || canUngroup) && (
+        <div className="opt-row group-row">
+          {canGroup && <button onClick={onGroup}>{tr("style.group")}</button>}
+          {canUngroup && <button onClick={onUngroup}>{tr("style.ungroup")}</button>}
+        </div>
+      )}
     </div>
   );
 }

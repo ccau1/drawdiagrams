@@ -108,6 +108,8 @@ export default {
   "style.link": "链接",
   "style.linkPlaceholder": "https://…",
   "style.openLink": "打开链接",
+  "style.group": "成组",
+  "style.ungroup": "取消成组",
   "style.layers": "层级",
   "layer.top": "置于顶层",
   "layer.up": "上移一层",

@@ -33,6 +33,7 @@ export interface El {
   fontSize?: number;
   textAlign?: "left" | "center" | "right";
   link?: string;          // optional URL attached to the element
+  groupId?: string;       // optional group membership
   labelDx?: number;      // line/arrow label offset from the midpoint
   labelDy?: number;
   // arrow endpoint → shape attachment (fractional bbox coords, so resize keeps it)

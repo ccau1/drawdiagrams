@@ -371,6 +371,54 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
     scheduleSave();
   };
 
+  // Expand a selection to include every member of any selected group.
+  const expandGroups = (ids: Set<string>): Set<string> => {
+    const out = new Set(ids);
+    const groupIds = new Set<string>();
+    for (const id of ids) {
+      const el = sceneRef.current.get(id);
+      if (el?.groupId) groupIds.add(el.groupId);
+    }
+    if (!groupIds.size) return out;
+    for (const el of sceneRef.current.all()) {
+      if (el.groupId && groupIds.has(el.groupId)) out.add(el.id);
+    }
+    return out;
+  };
+
+  const groupSelection = () => {
+    if (selectionRef.current.size < 2) return;
+    snapshot();
+    const gid = uid();
+    for (const id of selectionRef.current) {
+      const el = sceneRef.current.get(id);
+      if (!el) continue;
+      const upd = { ...el, groupId: gid, updatedAt: Date.now() };
+      sceneRef.current.upsert(upd);
+      broadcastOp({ kind: "upsert", el: upd });
+    }
+    scheduleSave(); rerender();
+  };
+
+  const ungroupSelection = () => {
+    if (!selectionRef.current.size) return;
+    const groupIds = new Set<string>();
+    for (const id of selectionRef.current) {
+      const el = sceneRef.current.get(id);
+      if (el?.groupId) groupIds.add(el.groupId);
+    }
+    if (!groupIds.size) return;
+    snapshot();
+    for (const el of sceneRef.current.all()) {
+      if (el.groupId && groupIds.has(el.groupId)) {
+        const upd = { ...el, groupId: undefined, updatedAt: Date.now() };
+        sceneRef.current.upsert(upd);
+        broadcastOp({ kind: "upsert", el: upd });
+      }
+    }
+    scheduleSave(); rerender();
+  };
+
   // Re-anchor arrow endpoints bound to a shape after it moved or resized.
   const updateBoundArrows = (shape: El) => {
     const x0 = Math.min(shape.x, shape.x + shape.w), x1 = Math.max(shape.x, shape.x + shape.w);
@@ -507,9 +555,16 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
           if (el) g.orig.set(id, { ...el, points: el.points ? [...el.points] : undefined });
         }
       } else if (hit) {
-        setSelection(new Set([hit.id]));
+        const gid = hit.groupId;
+        const ids = gid
+          ? sceneRef.current.all().filter((e) => e.groupId === gid).map((e) => e.id)
+          : [hit.id];
+        setSelection(new Set(ids));
         g.mode = "move";
-        g.orig.set(hit.id, { ...hit, points: hit.points ? [...hit.points] : undefined });
+        for (const id of ids) {
+          const el = sceneRef.current.get(id);
+          if (el) g.orig.set(id, { ...el, points: el.points ? [...el.points] : undefined });
+        }
       } else {
         // empty space: drag to create a selection region (lasso with Alt)
         setSelection(new Set());
@@ -750,7 +805,7 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
           ) ids.add(el.id);
         }
       }
-      setSelection(ids);
+      setSelection(expandGroups(ids));
       selRegionRef.current = null;
       rerender();
     }
@@ -965,6 +1020,8 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
         return;
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.key === "z" && e.shiftKey))) { e.preventDefault(); redo(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "g" && e.shiftKey) { e.preventDefault(); ungroupSelection(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "g") { e.preventDefault(); groupSelection(); return; }
       if (e.key === "Delete" || e.key === "Backspace") {
         if (selectionRef.current.size) {
           snapshot();
@@ -1477,9 +1534,13 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
             theme={theme}
             hasSelection={selection.size > 0}
             layerInfo={layerInfo}
+            canGroup={selection.size > 1}
+            canUngroup={[...selection].some((id) => sceneRef.current.get(id)?.groupId)}
             tr={tr}
             onStyle={applyStyle}
             onLayer={applyLayer}
+            onGroup={groupSelection}
+            onUngroup={ungroupSelection}
           />
         )}
 
