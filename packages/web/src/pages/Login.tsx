@@ -38,7 +38,7 @@ export default function Login({ ctx }: { ctx: AppCtx }) {
   useEffect(() => {
     api.authConfig()
       .then(setConfig)
-      .catch(() => setConfig({ localEnabled: true, providers: [] }))
+      .catch(() => setConfig({ localEnabled: true, localRegistrationEnabled: true, providers: [] }))
       .finally(() => setConfigLoading(false));
   }, []);
 
@@ -80,6 +80,7 @@ export default function Login({ ctx }: { ctx: AppCtx }) {
   }
 
   const showLocal = config?.localEnabled ?? true;
+  const showRegister = showLocal && (config?.localRegistrationEnabled ?? true);
   const hasSSO = (config?.providers.length ?? 0) > 0;
 
   return (
@@ -93,7 +94,9 @@ export default function Login({ ctx }: { ctx: AppCtx }) {
           <>
             <div className="tabs">
               <button type="button" className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>{t("auth.signin")}</button>
-              <button type="button" className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>{t("auth.register")}</button>
+              {showRegister && (
+                <button type="button" className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>{t("auth.register")}</button>
+              )}
             </div>
             <input
               placeholder={mode === "login" ? t("auth.usernameOrEmail") : t("auth.email")}

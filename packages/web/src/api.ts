@@ -1,5 +1,5 @@
 // Tiny REST client with token persistence.
-import type { BoardFull, BoardMeta, Declaration, Folder, Org, User } from "./types";
+import type { BoardFull, BoardMeta, Declaration, Folder, Org, Team, User } from "./types";
 
 const TOKEN_KEY = "drawboard.token";
 
@@ -33,6 +33,7 @@ export const REDIRECT_AFTER_LOGIN_KEY = "drawboard.redirectAfterLogin";
 
 export interface AuthConfig {
   localEnabled: boolean;
+  localRegistrationEnabled: boolean;
   providers: { id: string; name: string; authUrl: string }[];
 }
 
@@ -45,11 +46,24 @@ export const api = {
   me: () => req<{ user: User; orgs: Org[] }>("GET", "/api/me"),
   orgs: () => req<Org[]>("GET", "/api/orgs"),
   createOrg: (name: string) => req<Org>("POST", "/api/orgs", { name }),
-  addMember: (orgId: string, email: string) =>
-    req<Org[]>("POST", `/api/orgs/${orgId}/members`, { email }),
+  addMember: (orgId: string, identifier: string, role?: string) =>
+    req<Org[]>("POST", `/api/orgs/${orgId}/members`, { identifier, role }),
+  removeMember: (orgId: string, userId: string) =>
+    req<Org[]>("DELETE", `/api/orgs/${orgId}/members/${userId}`),
+  setMemberRole: (orgId: string, userId: string, role: string) =>
+    req<Org[]>("PUT", `/api/orgs/${orgId}/members/${userId}/role`, { role }),
+  createUserAdmin: (email: string, username: string, name: string, password: string, role: string) =>
+    req<User>("POST", "/api/admin/users", { email, username, name, password, role }),
+  createTeam: (orgId: string, name: string) =>
+    req<Team>("POST", `/api/orgs/${orgId}/teams`, { name }),
+  teams: (orgId: string) => req<Team[]>("GET", `/api/orgs/${orgId}/teams`),
+  addTeamMember: (teamId: string, identifier: string) =>
+    req<{ ok: boolean }>("POST", `/api/teams/${teamId}/members`, { identifier }),
+  removeTeamMember: (teamId: string, userId: string) =>
+    req<{ ok: boolean }>("DELETE", `/api/teams/${teamId}/members/${userId}`),
   boards: (orgId: string) => req<BoardMeta[]>("GET", `/api/orgs/${orgId}/boards`),
-  createBoard: (orgId: string, name: string, folderId?: string) =>
-    req<BoardMeta>("POST", `/api/orgs/${orgId}/boards`, { name, folderId }),
+  createBoard: (orgId: string, name: string, folderId?: string, teamId?: string) =>
+    req<BoardMeta>("POST", `/api/orgs/${orgId}/boards`, { name, folderId, teamId }),
   folders: (orgId: string) => req<Folder[]>("GET", `/api/orgs/${orgId}/folders`),
   createFolder: (orgId: string, name: string, parentId?: string) =>
     req<Folder>("POST", `/api/orgs/${orgId}/folders`, { name, parentId }),

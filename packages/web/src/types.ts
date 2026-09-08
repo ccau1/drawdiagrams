@@ -89,15 +89,23 @@ export interface Declaration {
   imports?: ImportDecl[]; exports?: ExportDecl[];
 }
 
-export interface User { id: string; name: string; email: string; }
-export interface Org { id: string; name: string; ownerId: string; memberIds: string[]; }
+export interface User { id: string; name: string; email: string; role?: string; }
+export interface OrgMember { userId: string; role: string; }
+export interface Org {
+  id: string; name: string; ownerId: string;
+  memberIds?: string[]; members?: OrgMember[];
+}
+export interface Team {
+  id: string; orgId: string; name: string;
+  memberIds: string[]; createdAt: string;
+}
 export interface Folder {
   id: string; orgId: string; name: string;
   parentId?: string; createdAt: string;
 }
 export interface BoardMeta {
   id: string; orgId: string; name: string; ownerId: string;
-  folderId?: string; shared: boolean; thumbnail?: string; createdAt: string; updatedAt: string;
+  folderId?: string; teamId?: string; shared: boolean; thumbnail?: string; createdAt: string; updatedAt: string;
 }
 export interface BoardFull extends BoardMeta { elements: El[]; appState: AppState; }
 

@@ -128,6 +128,7 @@ func New(dir string) (*Store, error) {
 			}
 			o.Members = members
 		}
+		o.MemberIDs = nil // migrated; drop the legacy list
 	}
 	return s, nil
 }
@@ -299,6 +300,9 @@ func (s *Store) Org(id string) (*Org, error) {
 }
 
 func (s *Store) orgMemberRoleLocked(o *Org, userID string) string {
+	if o == nil {
+		return ""
+	}
 	if o.OwnerID == userID {
 		return OrgRoleOwner
 	}

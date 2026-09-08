@@ -32,6 +32,8 @@ server:
     # Optional; defaults to the username if it contains '@', otherwise
     # "<username>@local".
     initialEmail: ""
+    # Allow anonymous self-registration via POST /api/register.
+    registrationEnabled: true
   # JWT signing secret; if empty, jwt.existingSecret is used or a random one
   # is generated per pod start (not recommended for >1 replica).
   jwtSecret: ""

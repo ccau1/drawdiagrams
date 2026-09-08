@@ -30,6 +30,8 @@ spec:
               value: {{ include "drawboard.databaseUrl" . | quote }}
             - name: MARKETPLACE_DIR
               value: packages/server/marketplace
+            - name: LOCAL_AUTH_REGISTRATION_ENABLED
+              value: {{ .Values.server.auth.registrationEnabled | quote }}
             {{- if or .Values.server.jwtSecret .Values.jwt.existingSecret }}
             - name: JWT_SECRET
               valueFrom:
