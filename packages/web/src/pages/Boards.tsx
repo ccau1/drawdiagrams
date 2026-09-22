@@ -144,7 +144,7 @@ export default function Boards({ ctx }: { ctx: AppCtx }) {
   const itemMenu = (item: ItemRef) => {
     const key = `${item.kind}:${item.id}`;
     return (
-      <div className="menu-anchor" onClick={(e) => e.stopPropagation()}>
+      <div className="menu-anchor" onClick={(e) => { e.stopPropagation(); e.preventDefault(); }}>
         <button
           className="more-btn"
           title={t("boards.more")}
@@ -251,7 +251,7 @@ export default function Boards({ ctx }: { ctx: AppCtx }) {
           {visBoards.map((b) => {
             const hue = boardHue(b.id);
             return (
-              <div key={b.id} className="board-card" onClick={() => (location.hash = `#/b/${b.id}`)}>
+            <a key={b.id} className="board-card" href={`#/b/${b.id}`} style={{ textDecoration: "none", color: "inherit" }}>
                 {itemMenu({ kind: "board", id: b.id, name: b.name })}
                 {b.thumbnail ? (
                   <img className="board-thumb board-thumb-img" src={b.thumbnail} alt="" />
@@ -265,7 +265,7 @@ export default function Boards({ ctx }: { ctx: AppCtx }) {
                 )}
                 <div className="board-name">{b.name}</div>
                 <div className="dim small">{new Date(b.updatedAt).toLocaleString()}</div>
-              </div>
+            </a>
             );
           })}
         </div>

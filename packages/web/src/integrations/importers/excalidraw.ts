@@ -33,12 +33,17 @@ interface ExEl {
   text?: string;
   fontSize?: number;
   textAlign?: "left" | "center" | "right";
+  verticalAlign?: "top" | "middle" | "bottom";
+  containerId?: string | null; // set on text elements bound to a shape/arrow
   link?: string;
   points?: number[][];
   startArrowhead?: string | null;
   endArrowhead?: string | null;
-  roundness?: { type: string } | null;
-  fileIds?: string[];
+  // Excalidraw serializes roundness types as numbers:
+  // 1 = legacy rect rounding, 2 = proportional (curved lines/arrows), 3 = adaptive rect radius.
+  roundness?: { type: number | string; value?: number } | null;
+  fileId?: string | null;   // current Excalidraw
+  fileIds?: string[];       // Excalidraw < 0.15
   startBinding?: ExBinding | null;
   endBinding?: ExBinding | null;
 }
@@ -84,7 +89,7 @@ function toFillPattern(s?: string): El["fillPattern"] {
 function toHead(h?: string | null): El["headEnd"] {
   if (h === "arrow") return "arrow";
   if (h === "triangle") return "triangle";
-  if (h === "dot") return "dot";
+  if (h === "dot" || h === "circle") return "dot"; // "circle" is the modern filled-dot head
   return "none";
 }
 
@@ -98,7 +103,8 @@ function normalize(el: ExEl): Partial<El> {
     stroke: el.strokeColor ?? "#1b1b1f",
     fill: el.backgroundColor && el.backgroundColor !== "transparent" ? el.backgroundColor : "transparent",
     strokeWidth: el.strokeWidth ?? 2,
-    opacity: el.opacity ?? 1,
+    // Excalidraw opacity is 0..100; Drawboard expects 0..1.
+    opacity: Math.min(1, Math.max(0, (el.opacity ?? 100) / 100)),
     strokeType: toStrokeStyle(el.strokeStyle),
     fillPattern: toFillPattern(el.fillStyle),
     roughness: el.roughness ?? 1,
@@ -109,6 +115,7 @@ function normalize(el: ExEl): Partial<El> {
     base.fontSize = el.fontSize ?? 20;
     if (el.textAlign) base.textAlign = el.textAlign;
   }
+  if (el.verticalAlign) base.textVerticalAlign = el.verticalAlign;
   if (el.link) base.link = el.link;
   if (el.points && el.points.length >= 2) {
     base.points = el.points.flat();
@@ -117,8 +124,22 @@ function normalize(el: ExEl): Partial<El> {
     base.headStart = toHead(el.startArrowhead);
     base.headEnd = el.endArrowhead === undefined ? "arrow" : toHead(el.endArrowhead);
   }
-  if (el.roundness?.type === "round") {
-    base.edges = "round";
+  // Any non-null roundness means rounded corners / curved rendering.
+  if (el.roundness) {
+    if (el.type === "rectangle" || el.type === "diamond") {
+      base.edges = "round";
+    } else if ((el.type === "arrow" || el.type === "line") && base.points) {
+      // Curved lines/arrows route a quadratic bezier through a midpoint
+      // control point; synthesize one for the common 2-point case.
+      const n = base.points.length;
+      if (n === 4) {
+        const [x0, y0, x1, y1] = base.points;
+        base.points = [x0, y0, (x0 + x1) / 2, (y0 + y1) / 2, x1, y1];
+        base.lineType = "curve";
+      } else if (n === 6) {
+        base.lineType = "curve";
+      }
+    }
   }
   return base;
 }
@@ -157,7 +178,7 @@ export function importExcalidraw(text: string): ImportResult {
     }
     if (type === "image") {
       normalized.fill = "transparent";
-      const fileId = el.fileIds?.[0];
+      const fileId = el.fileId ?? el.fileIds?.[0];
       const file = fileId ? files[fileId] : undefined;
       if (file?.dataURL) normalized.image = file.dataURL;
     }
@@ -205,11 +226,30 @@ export function importExcalidraw(text: string): ImportResult {
     }
   }
 
+  // Third pass: Excalidraw stores shape/arrow labels as separate text elements
+  // with containerId — fold them into the Drawboard element's own text fields.
+  const absorbed = new Set<string>();
+  const TEXT_HOSTS = new Set(["rect", "ellipse", "diamond", "arrow", "line"]);
+  for (let i = 0; i < elements.length; i++) {
+    const ex = elements[i];
+    if (ex.type !== "text" || !ex.containerId) continue;
+    const shapeId = idMap.get(ex.containerId);
+    const shape = shapeId ? byId.get(shapeId) : undefined;
+    const tEl = out[i];
+    if (!shape || !tEl || !TEXT_HOSTS.has(shape.type)) continue;
+    if (tEl.text) shape.text = tEl.text;
+    if (tEl.fontSize) shape.fontSize = tEl.fontSize;
+    if (tEl.textAlign) shape.textAlign = tEl.textAlign;
+    if (tEl.textVerticalAlign) shape.textVerticalAlign = tEl.textVerticalAlign;
+    absorbed.add(tEl.id);
+  }
+  const kept = absorbed.size ? out.filter((e) => !absorbed.has(e.id)) : out;
+
   // Normalize so the imported diagram starts near the origin.
-  if (out.length) {
-    const minX = Math.min(...out.map((e) => e.x));
-    const minY = Math.min(...out.map((e) => e.y));
-    for (const e of out) { e.x -= minX - 60; e.y -= minY - 60; }
+  if (kept.length) {
+    const minX = Math.min(...kept.map((e) => e.x));
+    const minY = Math.min(...kept.map((e) => e.y));
+    for (const e of kept) { e.x -= minX - 60; e.y -= minY - 60; }
   }
   const appState: AppState = {};
   const exApp = scene.appState;
@@ -219,5 +259,5 @@ export function importExcalidraw(text: string): ImportResult {
   if (typeof exApp?.gridSize === "number") {
     appState.grid = exApp.gridSize > 0;
   }
-  return { elements: out, appState: Object.keys(appState).length ? appState : undefined };
+  return { elements: kept, appState: Object.keys(appState).length ? appState : undefined };
 }

@@ -55,8 +55,9 @@ function exportElement(el: El): ExportResult {
         width: el.w,
         height: el.h,
         angle: el.angle ?? 0,
-        opacity: el.opacity ?? 1,
+        opacity: Math.round(Math.min(1, Math.max(0, el.opacity ?? 1)) * 100),
         seed: el.seed ?? 1,
+        fileId: el.id,
         fileIds: [el.id],
         status: "saved",
         scale: [1, 1],
@@ -80,7 +81,7 @@ function exportElement(el: El): ExportResult {
     strokeWidth: el.strokeWidth ?? 2,
     strokeStyle: fromStrokeType(el.strokeType),
     roughness: el.roughness ?? 1,
-    opacity: el.opacity ?? 1,
+    opacity: Math.round(Math.min(1, Math.max(0, el.opacity ?? 1)) * 100),
     seed: el.seed ?? 1,
     version: 2,
   };
@@ -107,8 +108,13 @@ function exportElement(el: El): ExportResult {
     }
   }
 
-  if (el.edges === "round") {
-    base.roundness = { type: "round" };
+  // Excalidraw roundness types are numeric: 2 = proportional (curved lines),
+  // 3 = adaptive radius (rounded rects/diamonds at the default 32px).
+  // Elbow lines keep their routed 3-point polyline with no roundness.
+  if ((el.type === "line" || el.type === "arrow") && (el.lineType ?? (el.curve ? "curve" : "sharp")) === "curve") {
+    base.roundness = { type: 2 };
+  } else if (el.edges === "round") {
+    base.roundness = { type: 3, value: 32 };
   }
   if (el.link) base.link = el.link;
 

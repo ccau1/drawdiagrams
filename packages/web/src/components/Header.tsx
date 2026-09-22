@@ -33,7 +33,9 @@ export default function Header({ ctx, orgs, orgId, onOrgChange, onNewOrg, onInvi
 
   return (
     <header className="topbar">
-      <div className="brand"><img className="brand-logo" src="/favicon.svg" alt="" /> Drawboard</div>
+      <a href="/" className="brand" style={{ textDecoration: "none", color: "inherit" }}>
+        <img className="brand-logo" src="/favicon.svg" alt="" /> Drawboard
+      </a>
       <div className="org-switcher">
         <select value={orgId} onChange={(e) => onOrgChange(e.target.value)}>
           {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}

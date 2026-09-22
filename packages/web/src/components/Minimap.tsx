@@ -36,7 +36,9 @@ export default function Minimap({ scene, vp, theme, cssW, cssH, onJump }: {
     for (const el of scene.all()) {
       ctx.save();
       ctx.globalAlpha = 0.9;
-      drawElement(ctx, { ...el, roughness: 0, strokeWidth: Math.max(el.strokeWidth, 1.5 / s) });
+      // fixed hairline in css px regardless of zoom/scene scale, so thick
+      // strokes don't merge into blobs at minimap scale
+      drawElement(ctx, { ...el, roughness: 0, strokeWidth: 0.175 / s });
       ctx.restore();
     }
     ctx.restore();
