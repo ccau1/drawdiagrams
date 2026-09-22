@@ -40,6 +40,7 @@ type Datastore interface {
 	FoldersOfOrg(orgID string) []*Folder
 	Folder(id string) (*Folder, error)
 	MoveBoard(id, folderID string) error
+	RenameBoard(id, name string) error
 	MoveFolder(id, parentID string) error
 	DeleteFolder(id string) error
 }

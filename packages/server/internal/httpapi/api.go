@@ -3,7 +3,6 @@ package httpapi
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"strings"
 
@@ -103,6 +102,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/boards/{id}/share", a.shareBoard)
 	mux.HandleFunc("POST /api/boards/{id}/thumbnail", a.saveThumbnail)
 	mux.HandleFunc("POST /api/boards/{id}/move", a.moveBoard)
+	mux.HandleFunc("POST /api/boards/{id}/rename", a.renameBoard)
 	mux.HandleFunc("POST /api/folders/{id}/move", a.moveFolder)
 	mux.HandleFunc("DELETE /api/folders/{id}", a.deleteFolder)
 	mux.HandleFunc("GET /api/integrations", a.listIntegrations)
@@ -185,9 +185,12 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 	} else {
 		u, err = a.St.UserByUsername(ident)
 	}
+	if err != nil || u == nil {
+		writeErr(w, http.StatusUnauthorized, "invalid username/email or password")
+		return
+	}
 	ok := auth.CheckPassword(in.Password, u.PasswordHash)
-	log.Printf("DEBUG login ident=%q found=%v pwlen=%d ok=%v err=%v", ident, u != nil, len(u.PasswordHash), ok, err)
-	if err != nil || !ok {
+	if !ok {
 		writeErr(w, http.StatusUnauthorized, "invalid username/email or password")
 		return
 	}
@@ -674,6 +677,33 @@ func (a *API) moveBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.St.MoveBoard(b.ID, in.FolderId); err != nil {
+		writeErr(w, http.StatusNotFound, "board not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *API) renameBoard(w http.ResponseWriter, r *http.Request) {
+	b, uid := a.boardAccess(w, r)
+	if b == nil {
+		return
+	}
+	if uid == "" || !a.St.IsOrgMember(b.OrgID, uid) {
+		writeErr(w, http.StatusForbidden, "not an org member")
+		return
+	}
+	var in struct {
+		Name string `json:"name"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	in.Name = strings.TrimSpace(in.Name)
+	if in.Name == "" {
+		writeErr(w, http.StatusBadRequest, "name required")
+		return
+	}
+	if err := a.St.RenameBoard(b.ID, in.Name); err != nil {
 		writeErr(w, http.StatusNotFound, "board not found")
 		return
 	}

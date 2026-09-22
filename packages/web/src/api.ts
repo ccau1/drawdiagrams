@@ -69,6 +69,8 @@ export const api = {
     req<Folder>("POST", `/api/orgs/${orgId}/folders`, { name, parentId }),
   moveBoard: (id: string, folderId: string) =>
     req<{ ok: boolean }>("POST", `/api/boards/${id}/move`, { folderId }),
+  renameBoard: (id: string, name: string) =>
+    req<{ ok: boolean }>("POST", `/api/boards/${id}/rename`, { name }),
   moveFolder: (id: string, parentId: string) =>
     req<{ ok: boolean }>("POST", `/api/folders/${id}/move`, { parentId }),
   deleteFolder: (id: string) => req<{ ok: boolean }>("DELETE", `/api/folders/${id}`),

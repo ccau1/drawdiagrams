@@ -623,6 +623,15 @@ func (p *Postgres) MoveBoard(id, folderID string) error {
 	return err
 }
 
+func (p *Postgres) RenameBoard(id, name string) error {
+	tag, err := p.pool.Exec(context.Background(),
+		`UPDATE boards SET name=$2, updated_at=now() WHERE id=$1`, id, name)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}
+
 func (p *Postgres) MoveFolder(id, parentID string) error {
 	f, err := p.Folder(id)
 	if err != nil {

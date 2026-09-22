@@ -155,6 +155,30 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
     }, 1200);
   }, [boardId]);
 
+  // viewport (zoom + scroll) is per-device, so it goes to localStorage
+  // rather than the shared board appState
+  const vpKey = `drawboard.viewport.${boardId}`;
+  const vpSaveTimer = useRef<number>(0);
+  const saveViewport = useCallback(() => {
+    const { x, y, zoom } = vpRef.current;
+    try { localStorage.setItem(vpKey, JSON.stringify({ x, y, zoom })); } catch { /* ignore */ }
+  }, [vpKey]);
+  const scheduleViewportSave = useCallback(() => {
+    clearTimeout(vpSaveTimer.current);
+    vpSaveTimer.current = window.setTimeout(() => {
+      vpSaveTimer.current = 0;
+      saveViewport();
+    }, 400);
+  }, [saveViewport]);
+
+  const nameSaveTimer = useRef<number>(0);
+  const scheduleRename = useCallback((name: string) => {
+    clearTimeout(nameSaveTimer.current);
+    nameSaveTimer.current = window.setTimeout(() => {
+      if (name.trim()) api.renameBoard(boardId, name.trim()).catch(() => {});
+    }, 800);
+  }, [boardId]);
+
   // --- collab ---
   const broadcastOp = useCallback((op: { kind: "upsert" | "delete"; el?: El; id?: string }) => {
     collabRef.current?.send({ type: "op", payload: op });
@@ -220,6 +244,17 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
   // --- load board, connect collab ---
   useEffect(() => {
     let disposed = false;
+    // Restore saved viewport (zoom + scroll position) for this device.
+    // Done synchronously, before the fetch resolves, so the renderer picks
+    // it up on creation and StrictMode's remount can't race it.
+    try {
+      const saved = JSON.parse(localStorage.getItem(`drawboard.viewport.${boardId}`) || "");
+      if (saved && isFinite(saved.x) && isFinite(saved.y) && isFinite(saved.zoom)) {
+        vpRef.current.x = saved.x;
+        vpRef.current.y = saved.y;
+        vpRef.current.zoom = Math.min(6, Math.max(0.1, saved.zoom));
+      }
+    } catch { /* no saved viewport */ }
     api.board(boardId).then((b) => {
       if (disposed) return;
       setMeta(b);
@@ -251,13 +286,18 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
     collabRef.current = client;
     return () => {
       disposed = true; client.close(); clearTimeout(saveTimer.current);
+      // flush the viewport save only if one is pending — writing
+      // unconditionally would clobber the saved view with the initial
+      // {0,0,1} during StrictMode's mount/cleanup/remount cycle
+      if (vpSaveTimer.current) { clearTimeout(vpSaveTimer.current); saveViewport(); }
+      clearTimeout(nameSaveTimer.current);
       // snapshot the scene as the board card thumbnail; fire-and-forget
       if (getToken()) {
         const thumb = renderThumbnail(sceneRef.current.all(), themeRef.current.background);
         if (thumb) api.saveThumbnail(boardId, thumb).catch(() => {});
       }
     };
-  }, [boardId, handleWire, rerender]);
+  }, [boardId, handleWire, rerender, saveViewport]);
 
   // --- renderer lifecycle ---
   useEffect(() => {
@@ -624,6 +664,7 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
       vp.y += cy / vp.zoom - cy / newZoom;
       vp.zoom = newZoom;
       rerender();
+      scheduleViewportSave();
       return;
     }
     const { x: wx, y: wy } = toWorld(e);
@@ -637,6 +678,7 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
       vpRef.current.x = g.startWX - (e.clientX - canvasRef.current!.getBoundingClientRect().left) / vpRef.current.zoom;
       vpRef.current.y = g.startWY - (e.clientY - canvasRef.current!.getBoundingClientRect().top) / vpRef.current.zoom;
       rerender();
+      scheduleViewportSave();
       return;
     }
     if (g.mode === "selectRect") {
@@ -877,7 +919,8 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
       vp.y += e.deltaY / vp.zoom;
     }
     rerender();
-  }, [rerender]);
+    scheduleViewportSave();
+  }, [rerender, scheduleViewportSave]);
 
   useEffect(() => {
     const c = canvasRef.current!;
@@ -1295,7 +1338,7 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
                 <input
                   className="board-title"
                   value={meta?.name ?? ""}
-                  onChange={(e) => setMeta((m) => m && { ...m, name: e.target.value })}
+                  onChange={(e) => { setMeta((m) => m && { ...m, name: e.target.value }); scheduleRename(e.target.value); }}
                   placeholder={tr("board.untitled")}
                 />
               </div>
@@ -1583,8 +1626,8 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
         <div className="bottom-float">
           <div className="zoom-controls">
             <span className="dim small">{Math.round(zoom * 100)}%</span>
-            <button onClick={() => { vpRef.current.zoom = Math.max(0.1, vpRef.current.zoom / 1.5); rerender(); }}>−</button>
-            <button onClick={() => { vpRef.current.zoom = Math.min(6, vpRef.current.zoom * 1.5); rerender(); }}>＋</button>
+            <button onClick={() => { vpRef.current.zoom = Math.max(0.1, vpRef.current.zoom / 1.5); rerender(); scheduleViewportSave(); }}>−</button>
+            <button onClick={() => { vpRef.current.zoom = Math.min(6, vpRef.current.zoom * 1.5); rerender(); scheduleViewportSave(); }}>＋</button>
             <button onClick={() => {
               const b = sceneRef.current.sceneBounds();
               const r = wrapRef.current!.getBoundingClientRect();
@@ -1592,6 +1635,7 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
               vpRef.current.x = (b.x0 + b.x1) / 2 - r.width / vpRef.current.zoom / 2;
               vpRef.current.y = (b.y0 + b.y1) / 2 - r.height / vpRef.current.zoom / 2;
               rerender();
+              scheduleViewportSave();
             }} title={tr("board.zoomFit")}>⛶</button>
           </div>
           <div className={`minimap-wrap ${showMinimap ? "open" : "collapsed"}`}>
@@ -1601,6 +1645,7 @@ export default function Board({ ctx, boardId }: { ctx: AppCtx; boardId: string }
                 vpRef.current.x = wx - size.w / vpRef.current.zoom / 2;
                 vpRef.current.y = wy - size.h / vpRef.current.zoom / 2;
                 rerender();
+                scheduleViewportSave();
               }} />
             <button
               className="minimap-toggle"

@@ -683,6 +683,19 @@ func (s *Store) MoveBoard(id, folderID string) error {
 	return nil
 }
 
+func (s *Store) RenameBoard(id, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.d.Boards[id]
+	if !ok {
+		return ErrNotFound
+	}
+	b.Name = name
+	b.UpdatedAt = time.Now()
+	s.saveLocked()
+	return nil
+}
+
 // folderCycleLocked reports whether moving folder id under newParentID would
 // create a cycle (new parent is the folder itself or one of its descendants).
 func folderCycleLocked(folders map[string]*Folder, id, newParentID string) bool {
